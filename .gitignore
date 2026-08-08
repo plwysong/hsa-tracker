@@ -11,3 +11,6 @@ dist/
 
 # Personal seed history — never belongs in the repo
 src/seed-data.json
+
+# Private agent context — machine-local, never commit
+CLAUDE.local.md
