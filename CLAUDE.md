@@ -35,4 +35,4 @@ To deploy the current build to this machine's /Applications:
 - Commits must use the repo-local git identity (already configured: the GitHub noreply email). Never commit with a personal email.
 - Never commit: `data/`, any `*.db`, receipt files, `src/seed-data.json` (legacy), `CLAUDE.local.md`, or anything containing real names of medical providers, order numbers, addresses, or API keys. The .gitignore enforces this — do not weaken it.
 - Anything user-specific belongs in `CLAUDE.local.md` (gitignored), never in this file or the README.
-- Before any force-push or history operation, remember: GitHub retains orphaned commits and lists their SHAs in the public activity feed. If sensitive data ever lands in a pushed commit, scrubbing requires deleting and recreating the repository (done once, 2026-08-07).
+- Before any force-push or history operation, remember: GitHub retains orphaned commits and lists their SHAs in the public activity feed — history rewrites do not remove data from GitHub's servers.
