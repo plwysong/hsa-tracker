@@ -1,0 +1,13 @@
+# Personal data — never share or commit. This is the whole tracker:
+# the SQLite database and every stored receipt live here.
+data/
+
+node_modules/
+.DS_Store
+*.log
+
+# Build output — rebuilt with npm run installer; too large for git
+dist/
+
+# Personal seed history — never belongs in the repo
+src/seed-data.json
