@@ -6,25 +6,22 @@ A **local-first HSA eligible expense tracker** with AI receipt triage. Drop in r
 
 Everything runs on your own machine: a Node.js server, a SQLite database, and a folder of receipt files. **No hosting, no subscriptions, no cloud storage.** The only network calls are the AI triage (your own Claude or OpenAI API key) and optional IMAP email polling.
 
-## Setup — the easy way (macOS, no terminal needed)
+## Install (macOS)
 
-1. **Install Node.js** (free, one time): go to [nodejs.org](https://nodejs.org), click the big download button, and run the installer.
-2. **Double-click `Setup HSA Tracker.command`** in this folder. If macOS warns it "can't verify the developer", right-click the file → **Open** → **Open**. It installs the app's components and puts an **HSA Tracker** icon on your Desktop.
-3. From then on, **double-click the HSA Tracker icon** to open the app (drag it to your Dock to pin it).
+1. **Download the installer** from the [releases page](https://github.com/plwysong/hsa-tracker/releases/latest).
+2. Open the DMG and drag **HSA Tracker** into **Applications**.
+3. **First launch:** the app isn't code-signed with an Apple developer certificate, so macOS will block the first open. Double-click it, dismiss the warning, then go to System Settings → **Privacy & Security** → scroll down → **Open Anyway**. (On older macOS, right-click the app → **Open** → **Open** is enough.) This happens once per version.
 4. In **Settings**, pick an AI engine — for most people, paste a Claude or OpenAI API key (links and instructions are right there in Settings). Then hit *Test triage engine*.
 
-HSA Tracker opens in its own window like any other app — close the window (or Cmd+Q) and the whole app quits; click the icon again while it's open and the existing window comes forward.
+No Node.js, no terminal, no dependencies — the app is fully self-contained.
 
-## Setup — the terminal way
+**Hardware note:** the installer targets Apple Silicon Macs (2020 and later). On an older Intel Mac, run from source instead (below).
 
-Requires [Node.js](https://nodejs.org) 22.13+ (24 LTS recommended).
+## Updating
 
-```bash
-npm install
-npm start
-```
+The app checks the releases page each time it opens and shows an **Update available** notice with a download button when a newer version exists (the running version shows at the bottom of the sidebar). Download the new DMG, drag the app to Applications, click **Replace** — and do the one-time Open Anyway step again, since each unsigned build re-triggers it.
 
-`npm run app` opens the desktop window (Electron). `npm start` runs headless browser mode instead — open **http://localhost:8321**; in this mode the server quits itself a few minutes after the last tab closes (disable with `HSA_NO_AUTOEXIT=1`, which `npm run dev` sets). Either way the server binds to localhost only — nothing is exposed to your network. `npm run make-launcher` (re)builds the Desktop icon — do that any time you move the project folder.
+**Updates never touch your data.** The app lives in /Applications; your data lives in `~/Library/Application Support/HSA Tracker/`.
 
 ## Features
 
@@ -46,38 +43,39 @@ npm start
 | **ChatGPT (OpenAI) API key** | Pay-per-use (pennies per receipt) | Get a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). Uses GPT-4o mini. |
 | **Offline keywords** | Free | No AI. Coarse — only flags obvious matches. Also used automatically as a fallback if the AI engine fails, with a clear warning on each result. |
 
+## Running from source
+
+Requires [Node.js](https://nodejs.org) 22.13+ (24 LTS recommended), and a copy of this repo (clone it, or Code → Download ZIP).
+
+**No terminal needed:** double-click **`Setup HSA Tracker.command`** in the project folder. If macOS warns it "can't verify the developer", right-click the file → **Open** → **Open**. It installs the app's components and puts an **HSA Tracker** launcher on your Desktop — from then on, double-click that to open the app. `npm run make-launcher` rebuilds the launcher if you move the project folder.
+
+**Terminal:**
+
+```bash
+npm install
+npm start
+```
+
+`npm run app` opens the desktop window (Electron). `npm start` runs headless browser mode instead — open **http://localhost:8321**; in this mode the server quits itself a few minutes after the last tab closes (disable with `HSA_NO_AUTOEXIT=1`, which `npm run dev` sets). Either way the server binds to localhost only — nothing is exposed to your network.
+
 ## Building the standalone app
 
 ```bash
-npm run dist
+npm run dist        # self-contained dist/mac-arm64/HSA Tracker.app
+npm run installer   # the above + ad-hoc signing + dist/HSA Tracker Installer.dmg
 ```
 
-This produces a fully self-contained **`dist/mac-arm64/HSA Tracker.app`** — drop it in /Applications and it behaves like any installed Mac app (own window, own icon, proper name, quits on close). Recipients don't need Node.js or anything else.
+The `.app` is fully self-contained — recipients don't need Node.js or anything else. The installer script builds the DMG with `hdiutil` rather than electron-builder's dmg target, because the latter corrupts the ad-hoc code signature.
 
-## Updating (yours or a tester's install)
-
-Data is never touched by updates — the app lives in /Applications, the data in `~/Library/Application Support/HSA Tracker/`. To ship an update: bump `version` in package.json, run `npm run installer`, and send the new DMG. The recipient drags the app to Applications, clicks **Replace**, and does the one-time Open Anyway step again (each unsigned build re-triggers it). The running version shows at the bottom of the app's sidebar, so you can always ask "what version are you on?"
+To publish a new version: bump `version` in package.json, `npm run installer`, then
+`gh release create vX.Y.Z "dist/HSA Tracker Installer.dmg" --title "HSA Tracker vX.Y.Z" --notes "..."`. Installed apps see the new release and show the update notice. Packaged builds contain no personal data.
 
 ## Where your data lives
 
-- **Standalone app:** `~/Library/Application Support/HSA Tracker/data/` — `hsa.db` (ledger, rationale, audit log, settings) plus `receipts/` (every original file).
-- **Running from this folder** (`npm start` / `npm run app`): `hsa-tracker/data/` instead.
+- **Installed app:** `~/Library/Application Support/HSA Tracker/data/` — `hsa.db` (ledger, rationale, audit log, settings) plus `receipts/` (every original file).
+- **Running from source** (`npm start` / `npm run app`): `hsa-tracker/data/` instead.
 
 **Backing up that one `data/` folder backs up everything** (or just use Backup & Export → zip inside the app). `data/` is `.gitignore`d, so sharing this repo never shares your records.
-
-## Sharing this app & updates
-
-**Easiest: the releases page.** Every version's installer is published at
-**[github.com/plwysong/hsa-tracker/releases/latest](https://github.com/plwysong/hsa-tracker/releases/latest)** — send someone that link, they download the DMG, drag the app to Applications, done. Updates replace the app in place and **never touch existing data**. The app checks this page daily and shows an "Update available" notice with a download button when a newer version exists.
-
-To publish a new version: bump `version` in package.json, `npm run installer`, then
-`gh release create vX.Y.Z "dist/HSA Tracker Installer.dmg" --title "vX.Y.Z" --notes "..."`.
-
-Other options: send the DMG directly (AirDrop/Drive), or share this repo — recipients install Node.js and double-click `Setup HSA Tracker.command`. Packaged builds contain no personal data.
-
-**First-launch note (any option):** the app isn't code-signed with an Apple developer certificate, so macOS will block the first open. On recent macOS: double-click it, dismiss the warning, then System Settings → **Privacy & Security** → scroll down → **Open Anyway**. On older macOS, right-click → **Open** → **Open** is enough. This happens once.
-
-**Hardware note:** the build targets Apple Silicon Macs (2020 and later). For someone on an older Intel Mac, use option 3, or ask for a universal build (`electron-builder --mac dmg --universal`, roughly double the size).
 
 ## Architecture (for tinkerers)
 

@@ -4,7 +4,7 @@
   "description": "Local-first HSA eligible expense tracker with AI receipt triage",
   "type": "module",
   "main": "electron.js",
-  "author": "Peter Wysong",
+  "author": "plwysong",
   "engines": {
     "node": ">=22.13.0"
   },
