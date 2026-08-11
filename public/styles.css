@@ -283,6 +283,16 @@ tfoot td { font-weight: 700; border-top: 1px solid var(--baseline); }
 .radio-row .ai-fields input { width: 100% !important; max-width: 380px; }
 .test-row { margin-top: 8px; }
 .inline-note { font-size: 12.5px; color: var(--muted); }
+.skipped-emails {
+  margin-top: 12px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: color-mix(in srgb, var(--warning) 7%, transparent);
+}
+.skipped-emails .se-title { font-weight: 650; font-size: 12.5px; margin-bottom: 2px; }
+.skipped-emails .se-note { font-size: 12px; color: var(--ink-2); margin-bottom: 8px; }
+.skipped-emails .se-row { display: flex; gap: 10px; justify-content: space-between; font-size: 12px; padding: 3px 0; border-top: 1px solid var(--border); }
+.skipped-emails .se-subj { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skipped-emails .se-reason { color: var(--muted); flex-shrink: 0; }
 .bicon { flex-shrink: 0; vertical-align: -2.5px; }
 .test-result { font-size: 12.5px; margin-left: 10px; }
 .test-result.ok { color: var(--good-text); } .test-result.err { color: var(--critical); }

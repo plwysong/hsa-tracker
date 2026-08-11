@@ -79,6 +79,19 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 
+  -- Emails the poller examined but couldn't turn into a receipt (no supported
+  -- attachment, no readable body). Recorded so nothing is silently dropped —
+  -- the message stays in the inbox; this is the visible trail of what was passed over.
+  CREATE TABLE IF NOT EXISTS skipped_emails (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id TEXT,
+    from_addr TEXT,
+    subject TEXT,
+    reason TEXT,
+    email_date TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_expenses_status ON expenses(status);
   CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
 `);

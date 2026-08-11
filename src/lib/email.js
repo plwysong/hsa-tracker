@@ -15,6 +15,7 @@ export function emailStatus() {
     enabled: !!getSetting('email_enabled'),
     configured: !!(getSetting('email_user') && getSetting('email_password')),
     lastCheck,
+    recentSkipped: db.prepare('SELECT subject, from_addr, reason, email_date, created_at FROM skipped_emails ORDER BY id DESC LIMIT 10').all(),
   };
 }
 
@@ -32,28 +33,43 @@ export async function checkEmailNow() {
   });
 
   let processed = 0, skipped = 0;
+  const skippedDetails = [];
   await client.connect();
   try {
     const lock = await client.getMailboxLock('INBOX');
     try {
-      const unseen = await client.search({ seen: false });
-      for (const uid of unseen || []) {
-        const msg = await client.fetchOne(uid, { source: true });
+      // Look at all unread mail (no time bound, as before) PLUS anything from the last
+      // week even if already read. The message-id dedup below — not the read/unread flag —
+      // is the real guard against reprocessing, so opening a receipt in Gmail before the
+      // app polls can no longer make it vanish. Fall back to unread-only if a server
+      // rejects the OR search.
+      const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      let candidates;
+      try {
+        candidates = await client.search({ or: [{ seen: false }, { since }] });
+      } catch {
+        candidates = await client.search({ seen: false });
+      }
+
+      for (const seq of candidates || []) {
+        // Cheap envelope fetch first: get the message-id without downloading the body,
+        // so messages we've already handled cost almost nothing and aren't re-counted.
+        const env = await client.fetchOne(seq, { envelope: true });
+        const messageId = env?.envelope?.messageId || `uid-${seq}`;
+        if (db.prepare('SELECT 1 FROM processed_sources WHERE kind = ? AND ref = ?').get('email_message_id', messageId)) {
+          continue; // already processed in a previous run — ignore quietly
+        }
+
+        const msg = await client.fetchOne(seq, { source: true });
         if (!msg?.source) continue;
         const parsed = await simpleParser(msg.source);
-        const messageId = parsed.messageId || `uid-${uid}-${parsed.date?.getTime() || ''}`;
-
-        // Dedup on message id
-        const seen = db.prepare('SELECT 1 FROM processed_sources WHERE kind = ? AND ref = ?').get('email_message_id', messageId);
-        if (seen) { skipped++; await client.messageFlagsAdd(uid, ['\\Seen']); continue; }
-
         const sourceDetail = { from: parsed.from?.text, subject: parsed.subject, emailDate: parsed.date?.toISOString(), messageId };
         let ingested = false;
 
         for (const att of parsed.attachments || []) {
           if (!isSupported(att.contentType, att.filename || '')) continue;
           ingestDocument(att.content, {
-            originalName: att.filename || `attachment-${uid}`,
+            originalName: att.filename || `attachment-${seq}`,
             mime: att.contentType,
             source: 'email',
             sourceDetail,
@@ -77,8 +93,21 @@ export async function checkEmailNow() {
         }
 
         db.prepare('INSERT OR IGNORE INTO processed_sources (kind, ref) VALUES (?, ?)').run('email_message_id', messageId);
-        await client.messageFlagsAdd(uid, ['\\Seen']);
-        if (ingested) processed++; else skipped++;
+        await client.messageFlagsAdd(seq, ['\\Seen']);
+        if (ingested) {
+          processed++;
+        } else {
+          // The app couldn't turn this message into a receipt. Record it visibly instead
+          // of silently dropping it — the email itself stays in the inbox for you to handle.
+          const reason = (parsed.attachments || []).length
+            ? 'Had attachments, but none were a supported type (PDF, JPG, PNG, HEIC).'
+            : 'No attachment, and no readable text in the message body.';
+          db.prepare('INSERT INTO skipped_emails (message_id, from_addr, subject, reason, email_date) VALUES (?, ?, ?, ?, ?)')
+            .run(messageId, parsed.from?.text || '', parsed.subject || '', reason, parsed.date?.toISOString() || '');
+          audit('email_skipped', { messageId, subject: parsed.subject, reason });
+          skippedDetails.push({ subject: parsed.subject || '(no subject)', reason });
+          skipped++;
+        }
       }
     } finally {
       lock.release();
@@ -87,8 +116,8 @@ export async function checkEmailNow() {
     await client.logout().catch(() => {});
   }
 
-  lastCheck = { at: new Date().toISOString(), result: { processed, skipped }, error: null };
-  audit('email_check', lastCheck.result);
+  lastCheck = { at: new Date().toISOString(), result: { processed, skipped, skippedDetails }, error: null };
+  audit('email_check', { processed, skipped });
   return lastCheck.result;
 }
 

@@ -926,6 +926,12 @@ views.settings = async function () {
           <div class="field"><label>Check every (minutes)</label><input id="set-email-poll" type="number" value="${esc(s.email_poll_minutes)}"></div>
           <button class="btn small" id="email-check">Check inbox now</button><span class="test-result" id="email-test-result"></span>
           ${emailStat.lastCheck?.at ? `<div class="inline-note" style="margin-top:8px">Last check: ${new Date(emailStat.lastCheck.at).toLocaleString()} — ${emailStat.lastCheck.error ? 'error: ' + esc(emailStat.lastCheck.error) : `processed ${emailStat.lastCheck.result.processed}, skipped ${emailStat.lastCheck.result.skipped}`}</div>` : ''}
+          ${emailStat.recentSkipped?.length ? `
+          <div class="skipped-emails">
+            <div class="se-title">Couldn't be read as receipts (${emailStat.recentSkipped.length})</div>
+            <div class="se-note">These emails stayed in your inbox — the app couldn't pull a receipt from them. Handle them manually, or forward one with the receipt as a proper attachment.</div>
+            ${emailStat.recentSkipped.map(m => `<div class="se-row"><span class="se-subj">${esc(m.subject || '(no subject)')}</span><span class="se-reason">${esc(m.reason)}</span></div>`).join('')}
+          </div>` : ''}
         </div>
       </div>
     </div>
@@ -1035,8 +1041,9 @@ views.settings = async function () {
       await saveSettings(); // check with what's on screen, not what was saved earlier
       const r = await api('/email/check', { method: 'POST' });
       out.className = 'test-result ok';
-      out.textContent = `✓ Processed ${r.processed} new message${r.processed === 1 ? '' : 's'} (${r.skipped} skipped)`;
+      out.textContent = `✓ Processed ${r.processed} new message${r.processed === 1 ? '' : 's'}${r.skipped ? ` · ${r.skipped} couldn't be read (see below)` : ''}`;
       pollJobs();
+      if (r.skipped) views.settings(); // re-render so the skipped list shows immediately
     } catch (err) {
       out.className = 'test-result err';
       out.textContent = '✗ ' + err.message;
