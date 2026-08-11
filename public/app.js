@@ -13,6 +13,20 @@ const fmtDate = d => {
   return `${Number(m)}/${Number(day)}/${y}`;
 };
 
+// Inline stroke icons (Feather-style) so glyph rendering never depends on the OS font.
+const ICON_PATHS = {
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  zip: '<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>',
+  table: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+  code: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+  eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+};
+const icon = (name, size = 14) =>
+  `<svg class="bicon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[name]}</svg>`;
+
 async function api(path, opts = {}) {
   if (opts.body && typeof opts.body !== 'string' && !(opts.body instanceof FormData)) {
     opts.body = JSON.stringify(opts.body);
@@ -131,7 +145,7 @@ views.dashboard = async function () {
         <div class="sub">Your future tax-free withdrawal balance, documented and audit-ready.</div>
       </div>
       <div class="actions">
-        <button class="btn" id="dash-upload">⇪ Upload receipts</button>
+        <button class="btn" id="dash-upload">${icon('upload')} Upload receipts</button>
         ${s.pending_count ? `<button class="btn primary" id="dash-review">Review ${s.pending_count} pending →</button>` : ''}
       </div>
     </div>
@@ -219,7 +233,7 @@ views.review = async function () {
         <h1>Review Queue</h1>
         <div class="sub">Nothing reaches the permanent ledger without your approval. ${items.length} item${items.length === 1 ? '' : 's'} · ${money(total)}</div>
       </div>
-      <div class="actions"><button class="btn" id="rq-upload">⇪ Upload receipts</button></div>
+      <div class="actions"><button class="btn" id="rq-upload">${icon('upload')} Upload receipts</button></div>
     </div>
 
     <div class="filters">
@@ -438,7 +452,7 @@ function expensePaneHtml(e) {
         ? `<button class="btn good" data-pane-act="approve">✓ Approve</button>`
         : `<button class="btn primary" data-pane-act="reopen">↩ Re-queue</button>`}
     <button class="btn" data-pane-act="edit">Edit</button>
-    ${e.receipt_id ? `<button class="btn" data-pane-act="open-receipt">⎗ Open receipt</button>` : ''}
+    ${e.receipt_id ? `<button class="btn" data-pane-act="open-receipt">${icon('eye')} Open receipt</button>` : ''}
     <span style="flex:1"></span>
     ${e.status !== 'rejected' ? `<button class="btn ghost danger" data-pane-act="reject">Reject</button>` : ''}
     <button class="btn ghost danger" data-pane-act="delete">Delete</button>
@@ -515,8 +529,8 @@ views.ledger = async function () {
         <div class="sub">The permanent record. Click any row to inspect its evidence.</div>
       </div>
       <div class="actions">
-        <button class="btn" id="lg-receipts">⎗ Receipts</button>
-        <button class="btn primary" id="lg-add">＋ Add expense</button>
+        <button class="btn" id="lg-receipts">${icon('file')} Receipts</button>
+        <button class="btn primary" id="lg-add">${icon('plus')} Add expense</button>
       </div>
     </div>
 
@@ -569,8 +583,8 @@ views.ledger = async function () {
       <span id="lg-bulk-count"></span>
       <button class="btn small good" data-bulk="reimburse">✓ Mark reimbursed</button>
       <button class="btn small" data-bulk="unreimburse">Un-reimburse</button>
-      <button class="btn small" data-bulk="receipts">⇩ Receipts</button>
-      <button class="btn small" data-bulk="csv">⇩ CSV</button>
+      <button class="btn small" data-bulk="receipts">${icon('download')} Receipts</button>
+      <button class="btn small" data-bulk="csv">${icon('download')} CSV</button>
       <button class="btn small" data-bulk="category">Category…</button>
       <button class="btn small" data-bulk="reject">✗ Reject</button>
       <button class="btn small danger" data-bulk="delete">Delete…</button>
@@ -723,7 +737,7 @@ views.receipts = async function () {
       </div>
       <div class="actions">
         <button class="btn" id="rc-back">← Ledger</button>
-        <button class="btn primary" id="rc-upload">⇪ Upload receipts</button>
+        <button class="btn primary" id="rc-upload">${icon('upload')} Upload receipts</button>
       </div>
     </div>
 
@@ -743,8 +757,8 @@ views.receipts = async function () {
           <td class="num">${r.expense_count}</td>
           <td class="num">${r.discarded_count}</td>
           <td class="actions-cell">
-            <button class="btn small ghost" data-act="open" data-id="${r.id}">⎗ View</button>
-            <a class="btn small ghost" href="/api/receipts/${r.id}/file?download=1">⇩ Download</a>
+            <button class="btn small ghost" data-act="open" data-id="${r.id}">${icon('eye')} View</button>
+            <a class="btn small ghost" href="/api/receipts/${r.id}/file?download=1">${icon('download')} Download</a>
             <button class="btn small ghost" data-act="text" data-id="${r.id}">Extracted text</button>
             <button class="btn small ghost" data-act="retriage" data-id="${r.id}" title="Re-run AI triage on this receipt's extracted text">↻ Re-triage</button>
           </td>
@@ -800,7 +814,7 @@ views.discarded = async function () {
           <td>${esc(d.description)}</td>
           <td class="num">${d.amount != null ? money(d.amount) : '—'}</td>
           <td class="muted">${esc(d.reason)}</td>
-          <td>${d.receipt_id ? `<button class="btn small ghost" data-act="view-receipt" data-rid="${d.receipt_id}">⎗</button>` : '—'}</td>
+          <td>${d.receipt_id ? `<button class="btn small ghost" data-act="view-receipt" data-rid="${d.receipt_id}">${icon('eye')}</button>` : '—'}</td>
           <td class="actions-cell">${d.amount != null ? `<button class="btn small ghost" data-act="requeue" data-id="${d.id}">↩ Re-queue</button>` : ''}</td>
         </tr>`).join('') || '<tr><td colspan="6" class="empty">Nothing discarded yet</td></tr>'}
       </tbody>
@@ -878,23 +892,23 @@ views.settings = async function () {
     <h3 style="margin:26px 0 10px;font-size:14.5px">Backup &amp; export</h3>
     <div class="export-grid" style="margin-bottom:8px">
       <div class="card export-card">
-        <h3>⇩ Everything (zip)</h3>
+        <h3>${icon('zip', 16)} Everything (zip)</h3>
         <p>Full backup: ledger CSVs, complete JSON, PDF summary, and every receipt file.</p>
         <a class="btn primary" href="/api/export/zip">Download zip</a>
       </div>
       <div class="card export-card">
-        <h3>≣ Ledger (CSV)</h3>
+        <h3>${icon('table', 16)} Ledger (CSV)</h3>
         <p>Approved expenses as a spreadsheet-ready CSV.</p>
         <a class="btn" href="/api/export/csv">Approved only</a>
         <a class="btn ghost" href="/api/export/csv?all=1">All records</a>
       </div>
       <div class="card export-card">
-        <h3>⎗ Tax summary (PDF)</h3>
+        <h3>${icon('file', 16)} Tax summary (PDF)</h3>
         <p>Clean itemized summary with totals — for a tax preparer or the IRS packet.</p>
         <a class="btn" href="/api/export/pdf">Download PDF</a>
       </div>
       <div class="card export-card">
-        <h3>{ } Full data (JSON)</h3>
+        <h3>${icon('code', 16)} Full data (JSON)</h3>
         <p>Machine-readable export of every table, including the full audit history.</p>
         <a class="btn" href="/api/export/json">Download JSON</a>
       </div>
