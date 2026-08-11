@@ -42,7 +42,16 @@ async function heicToJpeg(buffer) {
 
 export async function ocrImage(buffer) {
   const { createWorker } = await import('tesseract.js');
-  const worker = await createWorker('eng');
+  const { createRequire } = await import('node:module');
+  const path = await import('node:path');
+  // The English model ships with the app (@tesseract.js-data/eng) so OCR never
+  // downloads anything. 4.0.0_best_int is the variant tesseract.js requests for
+  // its default LSTM-only mode; cacheMethod 'none' stops it from writing a
+  // duplicate copy of the model into the process working directory.
+  const langPath = path.join(
+    path.dirname(createRequire(import.meta.url).resolve('@tesseract.js-data/eng/package.json')),
+    '4.0.0_best_int');
+  const worker = await createWorker('eng', undefined, { langPath, cacheMethod: 'none', gzip: true });
   try {
     const { data } = await worker.recognize(buffer);
     return (data.text || '').trim();

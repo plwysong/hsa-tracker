@@ -4,7 +4,7 @@ A **local-first HSA eligible expense tracker** with AI receipt triage. Drop in r
 
 **Why:** IRS rules let you reimburse yourself from an HSA *tax-free at any time in the future* for qualified medical expenses — as long as the expense was incurred after the HSA existed, hasn't already been reimbursed or deducted, and is documented. This app is that documentation. The dashboard's headline number is your accumulated tax-free withdrawal balance.
 
-Everything runs on your own machine: a Node.js server, a SQLite database, and a folder of receipt files. **No hosting, no subscriptions, no cloud storage.** The only network calls are the AI triage (your own Claude or OpenAI API key), optional IMAP email polling, a version check against the GitHub releases page at launch, and a one-time download of the OCR model the first time a photo receipt needs it.
+Everything runs on your own machine: a Node.js server, a SQLite database, and a folder of receipt files. **No hosting, no subscriptions, no cloud storage.** The only network calls are the AI triage (your own Claude or OpenAI API key), optional IMAP email polling, and a version check against the GitHub releases page at launch. Everything else — including the OCR model for reading photo receipts — is bundled and works offline.
 
 ## Install (macOS)
 
