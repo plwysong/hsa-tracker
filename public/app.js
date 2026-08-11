@@ -865,10 +865,10 @@ views.settings = async function () {
         <div class="radio-row">
           <label><input type="radio" name="ai" value="anthropic-api" ${s.ai_provider === 'anthropic-api' ? 'checked' : ''}>
             <span><strong>Claude (Anthropic) API key</strong> (recommended)
-            <span class="r-sub">Create a key at <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> and paste it below. Uses Claude Sonnet 5 — costs pennies per receipt.</span></span></label>
+            <span class="r-sub">Create a key at <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> and paste it below. Uses Claude's Sonnet model, kept up to date automatically — costs pennies per receipt.</span></span></label>
           <label><input type="radio" name="ai" value="openai-api" ${s.ai_provider === 'openai-api' ? 'checked' : ''}>
             <span><strong>ChatGPT (OpenAI) API key</strong>
-            <span class="r-sub">Same idea with OpenAI's models. Create a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a> and paste it below. Uses GPT-4o mini — costs pennies per receipt.</span></span></label>
+            <span class="r-sub">Same idea with OpenAI's models. Create a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a> and paste it below. Uses OpenAI's small "mini" model, kept up to date automatically — costs pennies per receipt.</span></span></label>
           <label><input type="radio" name="ai" value="keywords" ${s.ai_provider === 'keywords' ? 'checked' : ''}>
             <span><strong>No AI (offline keyword matching)</strong>
             <span class="r-sub">Free and private, but coarse — only flags items with obvious medical keywords.</span></span></label>

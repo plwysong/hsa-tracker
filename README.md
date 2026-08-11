@@ -39,8 +39,8 @@ The app checks the releases page each time it opens and shows an **Update availa
 
 | Engine | Cost | Notes |
 |---|---|---|
-| **Claude (Anthropic) API key** (default) | Pay-per-use (pennies per receipt) | Get a key at [console.anthropic.com](https://console.anthropic.com). Uses Claude Sonnet 5. |
-| **ChatGPT (OpenAI) API key** | Pay-per-use (pennies per receipt) | Get a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). Uses GPT-4o mini. |
+| **Claude (Anthropic) API key** (default) | Pay-per-use (pennies per receipt) | Get a key at [console.anthropic.com](https://console.anthropic.com). Uses Claude's Sonnet model — if the model is ever retired, the app switches itself to the newest Sonnet automatically. |
+| **ChatGPT (OpenAI) API key** | Pay-per-use (pennies per receipt) | Get a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). Uses OpenAI's small "mini" model, with the same automatic switching. |
 | **Offline keywords** | Free | No AI. Coarse — only flags obvious matches. Also used automatically as a fallback if the AI engine fails, with a clear warning on each result. |
 
 ## Running from source

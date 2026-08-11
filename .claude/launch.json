@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 8321
+    },
+    {
+      "name": "hsa-tracker-isolated",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["HSA_DATA_DIR=/tmp/hsa-tracker-test-data", "PORT=8399", "HSA_NO_AUTOEXIT=1", "node", "server.js"],
+      "port": 8399
     }
   ]
 }
