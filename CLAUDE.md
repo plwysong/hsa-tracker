@@ -16,8 +16,9 @@ Local-first Mac desktop app (Electron + Express + Node built-in `node:sqlite`, n
 2. `npm run installer`
 3. `gh release create vX.Y.Z "dist/HSA Tracker Installer.dmg" --title "HSA Tracker vX.Y.Z" --notes "..."`
 4. Commit + push. Installed apps poll `releases/latest` (hourly cache) and show an update notice.
+5. **Deploy the fresh build to this machine's /Applications** (standard step — see command below). The locally-built `.app` was never downloaded through a browser, so it carries no `com.apple.quarantine` flag and opens with no Gatekeeper dialog — unlike the DMG. This is how the owner stays current without the "Apple could not verify" prompt.
 
-To deploy the current build to this machine's /Applications:
+Deploy command (used in step 5):
 `pkill -f "Applications/HSA Tracker.app/Contents/MacOS"; rm -rf "/Applications/HSA Tracker.app"; ditto "dist/mac-arm64/HSA Tracker.app" "/Applications/HSA Tracker.app"; open -a "HSA Tracker"`
 (Always `rm -rf` before `ditto` — copying over an existing bundle merges files and breaks the code signature.)
 
