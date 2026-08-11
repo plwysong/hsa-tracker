@@ -14,9 +14,12 @@ export function listJobs() {
   return [...jobs.values()].sort((a, b) => b.id - a.id).slice(0, 30);
 }
 
-export function clearFinishedJobs() {
-  for (const [id, j] of jobs) {
-    if (j.status === 'done' || j.status === 'error' || j.status === 'duplicate') jobs.delete(id);
+// Auto-dismissal never clears errors — a failed file must stay on screen until the
+// user dismisses it (by id) or explicitly clears everything.
+export function clearFinishedJobs({ id = null, includeErrors = false } = {}) {
+  for (const [jid, j] of jobs) {
+    if (id != null) { if (jid === Number(id)) jobs.delete(jid); continue; }
+    if (j.status === 'done' || j.status === 'duplicate' || (includeErrors && j.status === 'error')) jobs.delete(jid);
   }
 }
 
@@ -74,28 +77,33 @@ export function retriageReceipt(receiptId) {
 
   (async () => {
     const triage = await triageReceipt(receipt.raw_text);
-    // Replace this receipt's previous *pending* candidates and discards so re-runs don't stack duplicates
-    db.prepare("DELETE FROM expenses WHERE receipt_id = ? AND status = 'pending_review'").run(receiptId);
+    // Replace this receipt's previous *pending* candidates and discards so re-runs don't stack
+    // duplicates. Rows the user created themselves (manual adds, re-queued discards) are kept —
+    // a re-triage must never wipe an explicit user decision.
+    db.prepare("DELETE FROM expenses WHERE receipt_id = ? AND status = 'pending_review' AND source_type != 'manual'").run(receiptId);
     db.prepare('DELETE FROM discarded WHERE receipt_id = ?').run(receiptId);
-    // Items the user already approved/rejected from this receipt stay decided —
-    // don't re-queue them. Matched by amount (consumed one-for-one, so two
-    // legitimate same-priced line items still both count).
-    const decided = db.prepare("SELECT amount FROM expenses WHERE receipt_id = ? AND status != 'pending_review'").all(receiptId)
+    // Any expense the user already touched — approved, rejected, or a manual row
+    // they created/re-queued — is left as-is and must not be re-added. Matched by
+    // amount, consumed one-for-one so two legitimately same-priced lines both count.
+    const kept = db.prepare("SELECT amount FROM expenses WHERE receipt_id = ?").all(receiptId)
       .map(r => r.amount);
     let skipped = 0;
     triage.items = triage.items.filter(item => {
-      const i = decided.findIndex(a => Math.abs(a - item.amount) < 0.005);
+      // Only items that would become expenses can match an already-decided expense
+      // amount. not_eligible items always pass through to the discarded log.
+      if (item.verdict === 'not_eligible') return true;
+      const i = kept.findIndex(a => Math.abs(a - item.amount) < 0.005);
       if (i === -1) return true;
-      decided.splice(i, 1);
+      kept.splice(i, 1);
       skipped++;
       return false;
     });
     insertTriageResults(job, receiptId, triage, receipt.source);
-    if (skipped) job.detail = `${skipped} already-decided item${skipped === 1 ? '' : 's'} left untouched. `;
     job.status = 'done';
-    job.detail = triage.ai_error
+    const keptNote = skipped ? `${skipped} item${skipped === 1 ? '' : 's'} you already decided left untouched. ` : '';
+    job.detail = keptNote + (triage.ai_error
       ? `AI triage unavailable — used keyword fallback. (${triage.ai_error})`
-      : (triage.document_summary || '');
+      : (triage.document_summary || ''));
     audit('retriage', { receiptId, queued: job.queued, discarded: job.discarded, provider: triage.ai_provider });
   })().catch(err => {
     job.status = 'error';
@@ -149,15 +157,29 @@ async function processJob(job, buffer, meta) {
   }
   writeFileSync(path.join(RECEIPTS_DIR, finalName), buffer);
 
-  job.status = 'extracting';
-  const { text, method } = await extractText(buffer, meta.mime, meta.originalName);
-
+  // Record the receipt BEFORE extraction, so even an unreadable file shows up in
+  // the Receipts tab and rides along in backups — never silently dropped.
   const res = db.prepare('INSERT INTO receipts (filename, original_name, mime, sha256, source, raw_text, meta) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(finalName, meta.originalName, meta.mime, hash, meta.source, text,
-      JSON.stringify({ extractMethod: method, ...meta.sourceDetail }));
+    .run(finalName, meta.originalName, meta.mime, hash, meta.source, '',
+      JSON.stringify({ ...meta.sourceDetail }));
   const receiptId = Number(res.lastInsertRowid);
   job.receiptId = receiptId;
   db.prepare('INSERT OR IGNORE INTO processed_sources (kind, ref) VALUES (?, ?)').run('file_sha256', hash);
+
+  job.status = 'extracting';
+  let text = '', method = 'failed';
+  try {
+    ({ text, method } = await extractText(buffer, meta.mime, meta.originalName));
+  } catch (err) {
+    db.prepare('UPDATE receipts SET meta = ? WHERE id = ?')
+      .run(JSON.stringify({ extractMethod: 'failed', extractError: err.message, ...meta.sourceDetail }), receiptId);
+    job.status = 'error';
+    job.detail = `The file was stored but could not be read (${err.message}) — add its line items manually from the Receipts tab.`;
+    audit('ingest_extract_error', { file: meta.originalName, receiptId, error: err.message });
+    return;
+  }
+  db.prepare('UPDATE receipts SET raw_text = ?, meta = ? WHERE id = ?')
+    .run(text, JSON.stringify({ extractMethod: method, ...meta.sourceDetail }), receiptId);
 
   if (!text || text.trim().length < 10) {
     job.status = 'done';
@@ -169,22 +191,43 @@ async function processJob(job, buffer, meta) {
   job.status = 'triaging';
   const triage = await triageReceipt(text);
 
-  // Order-level dedup: if we've already ingested this order id, skip re-queuing
+  // Order-level dedup, per line item: an amount already tracked under this order id
+  // is skipped (consumed one-for-one), but genuinely new items — e.g. the rest of a
+  // partially-shipped order — still get queued.
+  let dupNote = '';
   if (triage.order_ref) {
-    const dup = db.prepare("SELECT COUNT(*) AS n FROM expenses WHERE order_ref = ? AND order_ref != ''").get(String(triage.order_ref)).n;
-    if (dup > 0) {
-      job.status = 'duplicate';
-      job.detail = `Order ${triage.order_ref} already has ${dup} entr${dup === 1 ? 'y' : 'ies'} in the tracker — skipped to avoid duplicates. Receipt file was kept.`;
-      audit('ingest_order_dup', { file: meta.originalName, orderRef: triage.order_ref });
-      return;
+    const existing = db.prepare("SELECT amount FROM expenses WHERE order_ref = ? AND order_ref != ''")
+      .all(String(triage.order_ref)).map(r => r.amount);
+    if (existing.length) {
+      let dupes = 0;
+      triage.items = triage.items.filter(item => {
+        // Only eligible/needs_judgment items become expenses and can collide with
+        // an already-tracked amount. not_eligible items always pass through to the
+        // discarded log — never silently dropped by dedup.
+        if (item.verdict === 'not_eligible') return true;
+        const i = existing.findIndex(a => Math.abs(a - item.amount) < 0.005);
+        if (i === -1) return true;
+        existing.splice(i, 1);
+        dupes++;
+        return false;
+      });
+      // Only short-circuit as a pure duplicate when there is genuinely nothing left
+      // to record — neither a new expense nor a not_eligible item to log as discarded.
+      if (!triage.items.length) {
+        job.status = 'duplicate';
+        job.detail = `All items from order ${triage.order_ref} are already in the tracker — skipped to avoid duplicates. Receipt file was kept.`;
+        audit('ingest_order_dup', { file: meta.originalName, orderRef: triage.order_ref });
+        return;
+      }
+      if (dupes) dupNote = `${dupes} item${dupes === 1 ? '' : 's'} already tracked under order ${triage.order_ref} skipped. `;
     }
   }
 
   insertTriageResults(job, receiptId, triage, meta.source);
 
   job.status = 'done';
-  job.detail = triage.ai_error
+  job.detail = dupNote + (triage.ai_error
     ? `AI triage unavailable — used keyword fallback. Re-check results. (${triage.ai_error})`
-    : (triage.document_summary || '');
+    : (triage.document_summary || ''));
   audit('ingest_done', { file: meta.originalName, receiptId, queued: job.queued, discarded: job.discarded, provider: triage.ai_provider });
 }

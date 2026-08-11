@@ -37,7 +37,10 @@ export function receiptsZip(ids, res) {
 
 function csvEscape(v) {
   if (v === null || v === undefined) return '';
-  const s = String(v);
+  let s = String(v);
+  // Receipt/email text can start with =, +, -, or @, which spreadsheets execute
+  // as formulas. Neutralize with a leading apostrophe (plain numbers excepted).
+  if (/^[=+\-@]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = "'" + s;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

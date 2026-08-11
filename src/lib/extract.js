@@ -35,6 +35,23 @@ export async function extractPdfText(buffer) {
   return parts.join('\n').trim();
 }
 
+/** Rasterize the first pages of a scanned PDF and OCR them. */
+async function ocrPdf(buffer, maxPages = 3) {
+  const { createCanvas } = await import('@napi-rs/canvas');
+  const doc = await getDocument({ data: new Uint8Array(buffer), useSystemFonts: true }).promise;
+  const parts = [];
+  const pages = Math.min(doc.numPages, maxPages);
+  for (let i = 1; i <= pages; i++) {
+    const page = await doc.getPage(i);
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = createCanvas(viewport.width, viewport.height);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    parts.push(await ocrImage(canvas.toBuffer('image/png')));
+  }
+  await doc.destroy();
+  return parts.join('\n');
+}
+
 async function heicToJpeg(buffer) {
   const { default: heicConvert } = await import('heic-convert');
   return Buffer.from(await heicConvert({ buffer, format: 'JPEG', quality: 0.9 }));
@@ -69,10 +86,12 @@ export async function extractText(buffer, mime, filename = '') {
 
   if (mime === 'application/pdf' || ext === 'pdf') {
     const text = await extractPdfText(buffer);
-    // Scanned PDFs have no text layer; fall back to OCR of the whole buffer is not
-    // directly possible without rasterizing, so report what we have and let the
-    // caller decide. In practice most receipts (Amazon, dental, Costco) have text.
     if (text.length >= 30) return { text, method: 'pdf-text' };
+    // Scanned PDFs have no text layer — rasterize the first pages and OCR them.
+    try {
+      const ocrText = await ocrPdf(buffer);
+      if (ocrText.trim().length >= 30) return { text: ocrText, method: 'pdf-ocr' };
+    } catch { /* rasterization unavailable — fall through with what we have */ }
     return { text, method: 'pdf-text-sparse' };
   }
 

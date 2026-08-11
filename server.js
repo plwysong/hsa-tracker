@@ -12,6 +12,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8321;
 
 const app = express();
+
+// Even though the server binds to 127.0.0.1, a webpage in the user's browser can
+// still fire cross-origin requests at localhost. Reject anything whose Host or
+// Origin isn't local, so outside pages can't read or mutate the ledger.
+app.use((req, res, next) => {
+  const host = String(req.headers.host || '').replace(/:\d+$/, '');
+  const origin = req.headers.origin;
+  const localHost = ['localhost', '127.0.0.1', '[::1]'].includes(host);
+  const localOrigin = !origin || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin);
+  if (!localHost || !localOrigin) return res.status(403).json({ error: 'Local requests only' });
+  next();
+});
+
 app.use(express.json({ limit: '5mb' }));
 
 // Regular-app lifecycle: the dashboard page sends a heartbeat while open; once
@@ -35,6 +48,19 @@ if (!process.env.HSA_NO_AUTOEXIT) {
 // Local-only by default: bind to localhost so nothing is exposed to the network.
 app.use('/api', api);
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Final safety net: body-parser and multer errors (bad JSON, too many files,
+// oversized file) become plain-English JSON instead of an HTML stack trace.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  let status = 400, msg;
+  if (err.code === 'LIMIT_FILE_SIZE') msg = 'That file is larger than the 50 MB limit.';
+  else if (err.code === 'LIMIT_UNEXPECTED_FILE' || err.code === 'LIMIT_FILE_COUNT') msg = 'Upload up to 20 files at a time.';
+  else if (err.type === 'entity.parse.failed') msg = 'Invalid request body.';
+  else { status = err.status || 500; msg = err.message || 'Unexpected error'; }
+  console.error(err);
+  res.status(status).json({ error: msg });
+});
 
 restartEmailPolling();
 

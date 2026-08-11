@@ -23,6 +23,13 @@ const ICON_PATHS = {
   code: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
   eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
   plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+  x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  refresh: '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
+  undo: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+  arrowRight: '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
+  arrowLeft: '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 };
 const icon = (name, size = 14) =>
   `<svg class="bicon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[name]}</svg>`;
@@ -54,6 +61,7 @@ let currentView = 'dashboard';
 function navigate(view, opts = {}) {
   currentView = view;
   closePane();
+  closeModal();
   main.onclick = main.onchange = null; // drop the previous view's delegated handlers
   location.hash = '#/' + view;
   $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
@@ -138,6 +146,26 @@ views.dashboard = async function () {
   const catData = s.byCategory.map(c => ({ label: c.category, total: c.total, count: c.count }));
   const yearData = s.byYear.map(y => ({ label: y.year, total: y.total }));
 
+  // First run: skip the wall of zeros and point at the one action that matters.
+  // Only when the tracker is truly empty — no receipts stored or discarded either.
+  if (!s.approved_count && !s.pending_count && !s.rejected_count && !s.receipts_count && !s.discarded_count) {
+    main.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h1>Dashboard</h1>
+          <div class="sub">Your future tax-free withdrawal balance, documented and audit-ready.</div>
+        </div>
+      </div>
+      <div class="card welcome">
+        <h2>Start with your first receipt</h2>
+        <p>Drop a PDF or photo anywhere in this window, or click below. It gets split into line
+        items and checked for HSA eligibility — nothing is recorded without your approval.</p>
+        <button class="btn primary" id="dash-upload">${icon('upload')} Upload your first receipt</button>
+      </div>`;
+    $('#dash-upload').addEventListener('click', () => $('#file-input').click());
+    return;
+  }
+
   main.innerHTML = `
     <div class="page-head">
       <div>
@@ -146,7 +174,7 @@ views.dashboard = async function () {
       </div>
       <div class="actions">
         <button class="btn" id="dash-upload">${icon('upload')} Upload receipts</button>
-        ${s.pending_count ? `<button class="btn primary" id="dash-review">Review ${s.pending_count} pending →</button>` : ''}
+        ${s.pending_count ? `<button class="btn primary" id="dash-review">Review ${s.pending_count} pending ${icon('arrowRight')}</button>` : ''}
       </div>
     </div>
 
@@ -188,7 +216,7 @@ views.dashboard = async function () {
 
     <div class="card">
       <div class="group-head"><span class="g-title">Recently approved</span>
-        <span class="g-actions"><button class="btn small ghost" id="dash-ledger">Full ledger →</button></span></div>
+        <span class="g-actions"><button class="btn small ghost" id="dash-ledger">Full ledger ${icon('arrowRight')}</button></span></div>
       <div class="table-wrap"><table class="data">
         <thead><tr><th>Date</th><th>Provider</th><th>Description</th><th>Category</th><th class="num">Amount</th></tr></thead>
         <tbody>${s.recent.map(e => `
@@ -236,8 +264,9 @@ views.review = async function () {
       <div class="actions"><button class="btn" id="rq-upload">${icon('upload')} Upload receipts</button></div>
     </div>
 
+    ${items.length || Object.values(reviewFilters).some(Boolean) ? `
     <div class="filters">
-      <input type="search" id="rq-q" placeholder="Search descriptions, rationale…" value="${esc(reviewFilters.q)}">
+      <input type="search" id="rq-q" placeholder="Search…" value="${esc(reviewFilters.q)}">
       <select id="rq-conf">
         <option value="">All confidence</option>
         ${['High', 'Medium', 'Low'].map(c => `<option ${reviewFilters.confidence === c ? 'selected' : ''}>${c}</option>`).join('')}
@@ -252,29 +281,29 @@ views.review = async function () {
         <option value="email" ${reviewFilters.source === 'email' ? 'selected' : ''}>Email</option>
         <option value="import" ${reviewFilters.source === 'import' ? 'selected' : ''}>Imported</option>
       </select>
-      <button class="btn small ghost" id="rq-select-all">Select all</button>
+      ${items.length ? '<button class="btn small ghost" id="rq-select-all">Select all</button>' : ''}
       <span class="count">${items.length} shown</span>
-    </div>
+    </div>` : ''}
 
-    ${items.length === 0 ? `<div class="card"><div class="empty"><div class="big">✓</div>Queue is clear.<br>Upload a receipt or wait for the next email check.</div></div>` : ''}
+    ${items.length === 0 ? `<div class="card"><div class="empty"><div class="big">${icon('check', 34)}</div>Queue is clear.<br>${settings.email_enabled ? 'Upload a receipt or wait for the next email check.' : 'Upload a receipt to get started.'}</div></div>` : ''}
     ${[...groups.entries()].map(([key, list]) => renderGroup(key, list)).join('')}
 
     ${discardedCount ? `<p class="inline-note section-gap">${discardedCount} item${discardedCount === 1 ? ' was' : 's were'} auto-discarded as clearly not eligible — <a href="#/discarded">view them</a>. Nothing is ever deleted.</p>` : ''}
 
     <div class="bulkbar" id="bulkbar" hidden>
       <span id="bulk-count"></span>
-      <button class="btn small good" data-bulk="approve">✓ Approve</button>
-      <button class="btn small" data-bulk="reject">✗ Reject</button>
+      <button class="btn small good" data-bulk="approve">${icon('check')} Approve</button>
+      <button class="btn small" data-bulk="reject">${icon('x')} Reject</button>
       <span style="flex:1"></span>
       <button class="btn small ghost" id="bulk-clear" style="color:inherit">Clear</button>
     </div>`;
 
   $('#rq-upload').addEventListener('click', () => $('#file-input').click());
-  $('#rq-q').addEventListener('change', e => { reviewFilters.q = e.target.value; views.review(); });
-  $('#rq-conf').addEventListener('change', e => { reviewFilters.confidence = e.target.value; views.review(); });
-  $('#rq-cat').addEventListener('change', e => { reviewFilters.category = e.target.value; views.review(); });
-  $('#rq-src').addEventListener('change', e => { reviewFilters.source = e.target.value; views.review(); });
-  $('#rq-select-all').addEventListener('click', () => {
+  $('#rq-q')?.addEventListener('change', e => { reviewFilters.q = e.target.value; views.review(); });
+  $('#rq-conf')?.addEventListener('change', e => { reviewFilters.confidence = e.target.value; views.review(); });
+  $('#rq-cat')?.addEventListener('change', e => { reviewFilters.category = e.target.value; views.review(); });
+  $('#rq-src')?.addEventListener('change', e => { reviewFilters.source = e.target.value; views.review(); });
+  $('#rq-select-all')?.addEventListener('click', () => {
     const boxes = $$('.item input[type="checkbox"]');
     const allOn = boxes.every(b => b.checked);
     boxes.forEach(b => {
@@ -358,8 +387,8 @@ function renderGroup(key, list) {
       <span class="g-meta">${list.length} item${list.length === 1 ? '' : 's'} · ${money(sum)}</span>
       ${first.receipt_id ? `<button class="btn small ghost" data-act="view-receipt" data-rid="${first.receipt_id}">View receipt</button>` : ''}
       <span class="g-actions">
-        <button class="btn small good" data-group-act="approve" data-ids='${ids}'>✓ Approve all</button>
-        <button class="btn small" data-group-act="reject" data-ids='${ids}'>✗ Reject all</button>
+        <button class="btn small good" data-group-act="approve" data-ids='${ids}'>${icon('check')} Approve all</button>
+        <button class="btn small" data-group-act="reject" data-ids='${ids}'>${icon('x')} Reject all</button>
       </span>
     </div>
     ${list.map(e => `
@@ -379,9 +408,9 @@ function renderGroup(key, list) {
         <div style="text-align:right">
           <div class="amount">${money(e.amount)}</div>
           <div class="i-actions" style="margin-top:8px">
-            <button class="btn small good" data-act="approve" data-id="${e.id}">✓</button>
+            <button class="btn small good" data-act="approve" data-id="${e.id}" title="Approve" aria-label="Approve">${icon('check')}</button>
             <button class="btn small" data-act="edit" data-id="${e.id}">Edit</button>
-            <button class="btn small danger" data-act="reject" data-id="${e.id}">✗</button>
+            <button class="btn small danger" data-act="reject" data-id="${e.id}" title="Reject (kept for audit)" aria-label="Reject">${icon('x')}</button>
           </div>
         </div>
       </div>`).join('')}
@@ -420,7 +449,7 @@ function expensePaneHtml(e) {
       <h2>${esc(e.description)}</h2>
       <div class="drawer-amount">${money(e.amount)} <span class="chip status-${e.status}" style="vertical-align:3px">${e.status.replace('_', ' ')}</span></div>
     </div>
-    <button class="btn small ghost drawer-close">✕</button>
+    <button class="btn small ghost drawer-close" title="Close" aria-label="Close">${icon('x')}</button>
   </div>
   <div class="drawer-body">
     <div class="drawer-meta">
@@ -449,8 +478,8 @@ function expensePaneHtml(e) {
     ${e.status === 'approved'
       ? `<button class="btn primary" data-pane-act="toggle-reimb">${e.reimbursed ? 'Un-reimburse' : 'Mark reimbursed'}</button>`
       : e.status === 'pending_review'
-        ? `<button class="btn good" data-pane-act="approve">✓ Approve</button>`
-        : `<button class="btn primary" data-pane-act="reopen">↩ Re-queue</button>`}
+        ? `<button class="btn good" data-pane-act="approve">${icon('check')} Approve</button>`
+        : `<button class="btn primary" data-pane-act="reopen">${icon('undo')} Re-queue</button>`}
     <button class="btn" data-pane-act="edit">Edit</button>
     ${e.receipt_id ? `<button class="btn" data-pane-act="open-receipt">${icon('eye')} Open receipt</button>` : ''}
     <span style="flex:1"></span>
@@ -573,7 +602,7 @@ views.ledger = async function () {
           <td class="col-extra"><span class="chip cat">${esc(e.category)}</span></td>
           <td class="num">${money(e.amount)}</td>
           <td><span class="chip status-${e.status}">${e.status.replace('_', ' ')}</span></td>
-          <td class="col-extra">${e.reimbursed ? `<span class="good-text">✓ ${fmtDate(e.date_reimbursed)}</span>` : '<span class="muted">No</span>'}</td>
+          <td class="col-extra">${e.reimbursed ? `<span class="good-text">${icon('check')} ${fmtDate(e.date_reimbursed)}</span>` : '<span class="muted">No</span>'}</td>
         </tr>`).join('') || '<tr><td colspan="8" class="empty">No matching expenses</td></tr>'}
       </tbody>
       ${rows.length ? `<tfoot><tr><td colspan="99" style="text-align:right">Total: ${money(total)}</td></tr></tfoot>` : ''}
@@ -581,12 +610,12 @@ views.ledger = async function () {
 
     <div class="bulkbar" id="lg-bulkbar" hidden>
       <span id="lg-bulk-count"></span>
-      <button class="btn small good" data-bulk="reimburse">✓ Mark reimbursed</button>
+      <button class="btn small good" data-bulk="reimburse">${icon('check')} Mark reimbursed</button>
       <button class="btn small" data-bulk="unreimburse">Un-reimburse</button>
       <button class="btn small" data-bulk="receipts">${icon('download')} Receipts</button>
       <button class="btn small" data-bulk="csv">${icon('download')} CSV</button>
       <button class="btn small" data-bulk="category">Category…</button>
-      <button class="btn small" data-bulk="reject">✗ Reject</button>
+      <button class="btn small" data-bulk="reject">${icon('x')} Reject</button>
       <button class="btn small danger" data-bulk="delete">Delete…</button>
       <span style="flex:1"></span>
       <button class="btn small ghost" id="lg-bulk-clear" style="color:inherit">Clear</button>
@@ -678,8 +707,10 @@ views.ledger = async function () {
     if (action === 'csv') { location.href = '/api/export/csv?ids=' + ids.join(','); return; }
     if (action === 'reimburse') {
       reimburseModal(async date => {
-        await api('/expenses/bulk', { method: 'POST', body: { ids, action: 'reimburse', date_reimbursed: date } });
-        done(`${ids.length} marked reimbursed`);
+        const r = await api('/expenses/bulk', { method: 'POST', body: { ids, action: 'reimburse', date_reimbursed: date } });
+        done(r.count < ids.length
+          ? `${r.count} marked reimbursed (${ids.length - r.count} skipped — only approved expenses can be reimbursed)`
+          : `${r.count} marked reimbursed`);
       });
     }
     if (action === 'unreimburse') {
@@ -728,6 +759,7 @@ views.ledger = async function () {
 views.receipts = async function () {
   main.innerHTML = '<div class="empty">Loading…</div>';
   const receipts = await api('/receipts');
+  const settings = await api('/settings');
 
   main.innerHTML = `
     <div class="page-head">
@@ -736,7 +768,7 @@ views.receipts = async function () {
         <div class="sub">Every source document, stored durably and linked to its expenses.</div>
       </div>
       <div class="actions">
-        <button class="btn" id="rc-back">← Ledger</button>
+        <button class="btn" id="rc-back">${icon('arrowLeft')} Ledger</button>
         <button class="btn primary" id="rc-upload">${icon('upload')} Upload receipts</button>
       </div>
     </div>
@@ -760,7 +792,8 @@ views.receipts = async function () {
             <button class="btn small ghost" data-act="open" data-id="${r.id}">${icon('eye')} View</button>
             <a class="btn small ghost" href="/api/receipts/${r.id}/file?download=1">${icon('download')} Download</a>
             <button class="btn small ghost" data-act="text" data-id="${r.id}">Extracted text</button>
-            <button class="btn small ghost" data-act="retriage" data-id="${r.id}" title="Re-run AI triage on this receipt's extracted text">↻ Re-triage</button>
+            <button class="btn small ghost" data-act="add-expense" data-id="${r.id}" title="Add an expense with this receipt attached as its evidence">${icon('plus')} Add expense</button>
+            <button class="btn small ghost" data-act="retriage" data-id="${r.id}" title="Re-run AI triage on this receipt's extracted text">${icon('refresh')} Re-triage</button>
           </td>
         </tr>`).join('') || '<tr><td colspan="6" class="empty">No receipts yet — drop one above.</td></tr>'}
       </tbody>
@@ -777,6 +810,14 @@ views.receipts = async function () {
     const btn = e.target.closest('button');
     if (!btn) return;
     if (btn.dataset.act === 'open') window.open(`/api/receipts/${btn.dataset.id}/file`, '_blank');
+    if (btn.dataset.act === 'add-expense') {
+      const receiptId = Number(btn.dataset.id);
+      editExpenseModal(null, settings, async body => {
+        await api('/expenses', { method: 'POST', body: { ...body, receipt_id: receiptId } });
+        toast('Expense added to ledger with this receipt attached');
+        views.receipts();
+      });
+    }
     if (btn.dataset.act === 'retriage') {
       try {
         await api(`/receipts/${btn.dataset.id}/retriage`, { method: 'POST' });
@@ -803,7 +844,7 @@ views.discarded = async function () {
         <h1>Discarded items</h1>
         <div class="sub">Line items the triage judged clearly not HSA-eligible — kept for audit, never silently deleted. Re-queue anything you disagree with.</div>
       </div>
-      <div class="actions"><button class="btn" id="dc-back">← Review</button></div>
+      <div class="actions"><button class="btn" id="dc-back">${icon('arrowLeft')} Review</button></div>
     </div>
     <div class="card"><div class="table-wrap"><table class="data">
       <thead><tr><th>When</th><th>Item</th><th class="num">Amount</th><th>Why discarded</th><th>Receipt</th><th></th></tr></thead>
@@ -815,7 +856,7 @@ views.discarded = async function () {
           <td class="num">${d.amount != null ? money(d.amount) : '—'}</td>
           <td class="muted">${esc(d.reason)}</td>
           <td>${d.receipt_id ? `<button class="btn small ghost" data-act="view-receipt" data-rid="${d.receipt_id}">${icon('eye')}</button>` : '—'}</td>
-          <td class="actions-cell">${d.amount != null ? `<button class="btn small ghost" data-act="requeue" data-id="${d.id}">↩ Re-queue</button>` : ''}</td>
+          <td class="actions-cell">${d.amount != null ? `<button class="btn small ghost" data-act="requeue" data-id="${d.id}">${icon('undo')} Re-queue</button>` : ''}</td>
         </tr>`).join('') || '<tr><td colspan="6" class="empty">Nothing discarded yet</td></tr>'}
       </tbody>
     </table></div></div>`;
@@ -1019,11 +1060,11 @@ function editExpenseModal(item, settings, onSave, { showApprove = false, onAppro
   openModal(`
     <h3>${isNew ? 'Add expense' : 'Edit expense'}</h3>
     <div class="row2">
-      <div class="field"><label>Date</label><input type="date" id="m-date" value="${esc(item?.date?.slice(0, 10) || new Date().toISOString().slice(0, 10))}"></div>
-      <div class="field"><label>Amount</label><input type="number" step="0.01" min="0" id="m-amount" value="${item?.amount ?? ''}"></div>
+      <div class="field"><label>Date <span class="req">*</span></label><input type="date" id="m-date" value="${esc(item?.date?.slice(0, 10) || new Date().toISOString().slice(0, 10))}"></div>
+      <div class="field"><label>Amount ($) <span class="req">*</span></label><input type="number" step="0.01" min="0" id="m-amount" placeholder="0.00" value="${item?.amount ?? ''}"></div>
     </div>
     <div class="field"><label>Provider</label><input id="m-provider" value="${esc(item?.provider || '')}"></div>
-    <div class="field"><label>Description</label><input id="m-desc" value="${esc(item?.description || '')}"></div>
+    <div class="field"><label>Description <span class="req">*</span></label><input id="m-desc" value="${esc(item?.description || '')}"></div>
     <div class="row2">
       <div class="field"><label>Category</label>
         <select id="m-cat">${(settings.categories || ['Dental', 'Medical', 'Vision', 'Pharmacy', 'Other']).map(c => `<option ${item?.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select>
@@ -1089,12 +1130,15 @@ function reimburseModal(onConfirm) {
 async function uploadFiles(fileList) {
   const files = [...fileList];
   if (!files.length) return;
-  const fd = new FormData();
-  files.forEach(f => fd.append('files', f));
   toast(`Uploading ${files.length} file${files.length === 1 ? '' : 's'}…`);
   try {
-    await api('/upload', { method: 'POST', body: fd });
-    pollJobs();
+    // The server accepts 20 files per request — send bigger drops in batches
+    for (let i = 0; i < files.length; i += 20) {
+      const fd = new FormData();
+      files.slice(i, i + 20).forEach(f => fd.append('files', f));
+      await api('/upload', { method: 'POST', body: fd });
+      pollJobs();
+    }
   } catch (err) {
     toast('Upload failed: ' + err.message);
   }
@@ -1134,9 +1178,13 @@ async function pollJobs() {
       jobsTimer = null;
       refreshBadge();
       if (jobs.length && (currentView === 'review' || currentView === 'receipts' || currentView === 'dashboard')) views[currentView]();
-      // auto-dismiss finished jobs after a few seconds
+      // Auto-dismiss successful jobs after a few seconds. Errors stay on screen
+      // until the user dismisses them — a failed file must never vanish unseen.
       setTimeout(async () => {
-        try { await api('/jobs/clear', { method: 'POST' }); renderJobs([]); } catch { }
+        try {
+          await api('/jobs/clear', { method: 'POST', body: {} });
+          renderJobs((await api('/jobs').catch(() => [])));
+        } catch { }
       }, 6000);
     }
   };
@@ -1150,10 +1198,18 @@ function renderJobs(jobs) {
   };
   $('#jobs').innerHTML = jobs.map(j => {
     const active = ['queued', 'extracting', 'triaging'].includes(j.status);
-    const icon = active ? '<div class="spin"></div>' : j.status === 'done' ? '<span class="ok">✓</span>' : j.status === 'duplicate' ? '<span class="muted">⧉</span>' : '<span class="err">✗</span>';
+    const mark = active ? '<div class="spin"></div>'
+      : j.status === 'done' ? `<span class="ok">${icon('check')}</span>`
+      : j.status === 'duplicate' ? `<span class="muted">${icon('copy')}</span>`
+      : `<span class="err">${icon('x')}</span>`;
     const extra = j.status === 'done' ? `${j.queued} queued for review${j.discarded ? `, ${j.discarded} discarded` : ''}` : (j.detail || statusText[j.status]);
-    return `<div class="card job">${icon}<div class="j-body"><div class="j-name">${esc(j.name)}</div><div class="j-detail">${esc(active ? statusText[j.status] : extra)}</div></div></div>`;
+    const dismiss = j.status === 'error' ? `<button class="btn small ghost job-dismiss" data-job="${j.id}" title="Dismiss">${icon('x')}</button>` : '';
+    return `<div class="card job">${mark}<div class="j-body"><div class="j-name">${esc(j.name)}</div><div class="j-detail">${esc(active ? statusText[j.status] : extra)}</div></div>${dismiss}</div>`;
   }).join('');
+  $$('.job-dismiss').forEach(b => b.addEventListener('click', async () => {
+    try { await api('/jobs/clear', { method: 'POST', body: { id: Number(b.dataset.job) } }); } catch { }
+    renderJobs(await api('/jobs').catch(() => []));
+  }));
 }
 
 // ---------------- Heartbeat (lets the server quit itself after the app is closed) ----------------
@@ -1169,7 +1225,7 @@ api('/update-check').then(u => {
   el.className = 'card update-note';
   el.innerHTML = `<div><strong>Update available</strong><div class="muted" style="font-size:12px">Version ${esc(u.latest)} — you have ${esc(u.current)}</div></div>
     <a class="btn small primary" href="${esc(u.downloadUrl)}" target="_blank">Download</a>
-    <button class="btn small ghost" id="update-dismiss">✕</button>`;
+    <button class="btn small ghost" id="update-dismiss" title="Dismiss" aria-label="Dismiss">${icon('x')}</button>`;
   el.querySelector('#update-dismiss').onclick = () => el.remove();
   document.body.appendChild(el);
 }).catch(() => { });

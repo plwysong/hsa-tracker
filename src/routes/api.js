@@ -12,10 +12,26 @@ import { ledgerCsv, fullJson, fullZip, receiptsZip, summaryPdfBuffer } from '../
 export const api = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
-const wrap = fn => (req, res) => Promise.resolve(fn(req, res)).catch(err => {
-  console.error(err);
-  res.status(500).json({ error: err.message });
-});
+// try/catch (not Promise.resolve(fn(...))) so synchronous throws — e.g. SQLite
+// constraint errors — return JSON too instead of Express's HTML stack page.
+const wrap = fn => async (req, res) => {
+  try {
+    await fn(req, res);
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+};
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const isValidDate = d => {
+  const s = String(d);
+  if (!DATE_RE.test(s)) return false;
+  const [y, m, day] = s.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, day));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === day;
+};
+const isValidAmount = a => Number.isFinite(Number(a)) && Number(a) > 0;
 
 // ---------- App meta ----------
 import { readFileSync } from 'node:fs';
@@ -87,9 +103,12 @@ api.get('/stats', wrap((req, res) => {
     LEFT JOIN receipts r ON r.id = e.receipt_id
     WHERE e.status = 'approved' ORDER BY e.decided_at DESC, e.id DESC LIMIT 8
   `).all();
+  const receipts_count = db.prepare('SELECT COUNT(*) AS n FROM receipts').get().n;
+  const discarded_count = db.prepare('SELECT COUNT(*) AS n FROM discarded').get().n;
   res.json({
     ...totals,
     unreimbursed_total: totals.approved_total - totals.reimbursed_total,
+    receipts_count, discarded_count,
     byCategory, byYear, byMonth, recent,
   });
 }));
@@ -106,8 +125,8 @@ api.get('/expenses', wrap((req, res) => {
   if (reimbursed === 'yes') clauses.push('e.reimbursed = 1');
   if (reimbursed === 'no') clauses.push('e.reimbursed = 0');
   if (q) {
-    clauses.push('(e.description LIKE ? OR e.provider LIKE ? OR e.rationale LIKE ? OR e.order_ref LIKE ?)');
-    const like = `%${q}%`;
+    clauses.push("(e.description LIKE ? ESCAPE '\\' OR e.provider LIKE ? ESCAPE '\\' OR e.rationale LIKE ? ESCAPE '\\' OR e.order_ref LIKE ? ESCAPE '\\')");
+    const like = `%${String(q).replace(/[\\%_]/g, c => '\\' + c)}%`;
     params.push(like, like, like, like);
   }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
@@ -138,9 +157,9 @@ api.delete('/expenses/:id', wrap((req, res) => {
 
 api.post('/expenses', wrap((req, res) => {
   const { date, provider, category, description, amount, payment_method, notes, receipt_id, order_ref } = req.body;
-  if (!date || !description || !Number.isFinite(Number(amount))) {
-    return res.status(400).json({ error: 'date, description and a numeric amount are required' });
-  }
+  if (!isValidDate(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  if (!description) return res.status(400).json({ error: 'description is required' });
+  if (!isValidAmount(amount)) return res.status(400).json({ error: 'amount must be a positive number' });
   const r = db.prepare(`
     INSERT INTO expenses (date, provider, category, description, amount, payment_method, status, confidence, rationale, source_type, receipt_id, order_ref, notes, decided_at)
     VALUES (?, ?, ?, ?, ?, ?, 'approved', 'High', 'Manually added by user.', 'manual', ?, ?, ?, ?)
@@ -152,6 +171,8 @@ api.post('/expenses', wrap((req, res) => {
 
 api.patch('/expenses/:id', wrap((req, res) => {
   const allowed = ['date', 'provider', 'category', 'description', 'amount', 'payment_method', 'notes', 'order_ref', 'confidence'];
+  if ('date' in req.body && !isValidDate(req.body.date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  if ('amount' in req.body && !isValidAmount(req.body.amount)) return res.status(400).json({ error: 'amount must be a positive number' });
   const sets = [], params = [];
   for (const k of allowed) {
     if (k in req.body) { sets.push(`${k} = ?`); params.push(k === 'amount' ? Number(req.body[k]) : req.body[k]); }
@@ -165,24 +186,24 @@ api.patch('/expenses/:id', wrap((req, res) => {
 }));
 
 function decide(id, status) {
-  db.prepare("UPDATE expenses SET status = ?, decided_at = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(status, new Date().toISOString(), id);
+  return db.prepare("UPDATE expenses SET status = ?, decided_at = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(status, new Date().toISOString(), id).changes;
 }
 
 api.post('/expenses/:id/approve', wrap((req, res) => {
-  decide(req.params.id, 'approved');
+  if (!decide(req.params.id, 'approved')) return res.status(404).json({ error: 'Not found' });
   audit('approve', { id: Number(req.params.id) });
   res.json({ ok: true });
 }));
 
 api.post('/expenses/:id/reject', wrap((req, res) => {
-  decide(req.params.id, 'rejected');
+  if (!decide(req.params.id, 'rejected')) return res.status(404).json({ error: 'Not found' });
   audit('reject', { id: Number(req.params.id) });
   res.json({ ok: true });
 }));
 
 api.post('/expenses/:id/reopen', wrap((req, res) => {
-  decide(req.params.id, 'pending_review');
+  if (!decide(req.params.id, 'pending_review')) return res.status(404).json({ error: 'Not found' });
   audit('reopen', { id: Number(req.params.id) });
   res.json({ ok: true });
 }));
@@ -194,21 +215,27 @@ api.post('/expenses/bulk', wrap((req, res) => {
     return res.status(400).json({ error: `ids array and action (${ACTIONS.join('|')}) required` });
   }
   if (action === 'category' && !category) return res.status(400).json({ error: 'category required' });
+  let affected = 0;
   for (const id of ids) {
-    if (action === 'approve') decide(id, 'approved');
-    else if (action === 'reject') decide(id, 'rejected');
-    else if (action === 'reopen') decide(id, 'pending_review');
-    else if (action === 'reimburse') db.prepare("UPDATE expenses SET reimbursed = 1, date_reimbursed = ?, updated_at = datetime('now') WHERE id = ?").run(date_reimbursed || new Date().toISOString().slice(0, 10), id);
-    else if (action === 'unreimburse') db.prepare("UPDATE expenses SET reimbursed = 0, date_reimbursed = NULL, updated_at = datetime('now') WHERE id = ?").run(id);
-    else if (action === 'delete') db.prepare('DELETE FROM expenses WHERE id = ?').run(id);
-    else if (action === 'category') db.prepare("UPDATE expenses SET category = ?, updated_at = datetime('now') WHERE id = ?").run(category, id);
+    if (action === 'approve') affected += decide(id, 'approved');
+    else if (action === 'reject') affected += decide(id, 'rejected');
+    else if (action === 'reopen') affected += decide(id, 'pending_review');
+    else if (action === 'reimburse') affected += db.prepare("UPDATE expenses SET reimbursed = 1, date_reimbursed = ?, updated_at = datetime('now') WHERE id = ? AND status = 'approved'").run(date_reimbursed || new Date().toISOString().slice(0, 10), id).changes;
+    else if (action === 'unreimburse') affected += db.prepare("UPDATE expenses SET reimbursed = 0, date_reimbursed = NULL, updated_at = datetime('now') WHERE id = ?").run(id).changes;
+    else if (action === 'delete') affected += db.prepare('DELETE FROM expenses WHERE id = ?').run(id).changes;
+    else if (action === 'category') affected += db.prepare("UPDATE expenses SET category = ?, updated_at = datetime('now') WHERE id = ?").run(category, id).changes;
   }
-  audit('bulk_' + action, { count: ids.length, ids, date_reimbursed, category });
-  res.json({ ok: true, count: ids.length });
+  audit('bulk_' + action, { count: affected, ids, date_reimbursed, category });
+  res.json({ ok: true, count: affected });
 }));
 
 api.post('/expenses/:id/reimburse', wrap((req, res) => {
   const { reimbursed, date_reimbursed } = req.body;
+  const row = db.prepare('SELECT status FROM expenses WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (reimbursed && row.status !== 'approved') {
+    return res.status(400).json({ error: 'Only approved expenses can be marked reimbursed' });
+  }
   db.prepare("UPDATE expenses SET reimbursed = ?, date_reimbursed = ?, updated_at = datetime('now') WHERE id = ?")
     .run(reimbursed ? 1 : 0, reimbursed ? (date_reimbursed || new Date().toISOString().slice(0, 10)) : null, req.params.id);
   audit('reimburse', { id: Number(req.params.id), reimbursed: !!reimbursed });
@@ -229,7 +256,7 @@ api.post('/upload', upload.array('files', 20), wrap((req, res) => {
 }));
 
 api.get('/jobs', wrap((req, res) => res.json(listJobs())));
-api.post('/jobs/clear', wrap((req, res) => { clearFinishedJobs(); res.json({ ok: true }); }));
+api.post('/jobs/clear', wrap((req, res) => { clearFinishedJobs(req.body || {}); res.json({ ok: true }); }));
 
 // ---------- Receipts ----------
 api.get('/receipts', wrap((req, res) => {
@@ -276,10 +303,14 @@ api.post('/discarded/:id/requeue', wrap((req, res) => {
   const d = db.prepare('SELECT * FROM discarded WHERE id = ?').get(req.params.id);
   if (!d) return res.status(404).json({ error: 'Not found' });
   if (!Number.isFinite(d.amount) || d.amount <= 0) return res.status(400).json({ error: 'This entry has no amount — add it manually from the Ledger instead.' });
+  // Date the item from its receipt's other line items when possible, not from today
+  const docDate = d.receipt_id
+    ? db.prepare('SELECT date FROM expenses WHERE receipt_id = ? ORDER BY id LIMIT 1').get(d.receipt_id)?.date
+    : null;
   const r = db.prepare(`
     INSERT INTO expenses (date, provider, category, description, amount, status, confidence, rationale, source_type, receipt_id)
     VALUES (?, ?, 'Other', ?, ?, 'pending_review', 'Low', ?, 'manual', ?)
-  `).run(new Date().toISOString().slice(0, 10), '', d.description, d.amount,
+  `).run(docDate || new Date().toISOString().slice(0, 10), '', d.description, d.amount,
     `Originally auto-discarded ("${d.reason}") — re-queued by user for reconsideration.`, d.receipt_id);
   audit('requeue_discarded', { discardedId: d.id, newExpenseId: Number(r.lastInsertRowid) });
   res.json({ id: Number(r.lastInsertRowid) });
@@ -301,7 +332,11 @@ api.get('/settings', wrap((req, res) => {
   res.json(out);
 }));
 
+const AI_PROVIDERS = ['anthropic-api', 'openai-api', 'keywords'];
 api.put('/settings', wrap((req, res) => {
+  if ('ai_provider' in req.body && !AI_PROVIDERS.includes(req.body.ai_provider)) {
+    return res.status(400).json({ error: `ai_provider must be one of: ${AI_PROVIDERS.join(', ')}` });
+  }
   for (const k of SETTING_KEYS) {
     if (!(k in req.body)) continue;
     const v = req.body[k];
@@ -330,7 +365,13 @@ api.post('/quit', wrap((req, res) => {
 
 // ---------- Export ----------
 api.get('/export/csv', wrap((req, res) => {
-  const ids = req.query.ids ? String(req.query.ids).split(',').map(Number).filter(Number.isFinite) : null;
+  let ids = null;
+  if (req.query.ids != null && req.query.ids !== '') {
+    ids = String(req.query.ids).split(',').map(Number).filter(Number.isFinite);
+    if (!ids.length) return res.status(400).json({ error: 'ids must be a comma-separated list of numbers' });
+  } else if (req.query.ids === '') {
+    return res.status(400).json({ error: 'ids must be a comma-separated list of numbers' });
+  }
   res.type('text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="HSA-ledger.csv"');
   res.send(ledgerCsv({ approvedOnly: !ids && req.query.all !== '1', ids }));
