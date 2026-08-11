@@ -830,7 +830,7 @@ views.settings = async function () {
   const emailStat = await api('/email/status');
 
   main.innerHTML = `
-    <div class="page-head"><div><h1>Settings</h1><div class="sub">AI engine, email ingestion, and backups.</div></div></div>
+    <div class="page-head"><div><h1>Settings</h1><div class="sub">AI engine, email ingestion, and backups. Changes save automatically.<span class="test-result ok" id="save-status"></span></div></div></div>
 
     <div class="settings-form">
       <div class="card settings-section">
@@ -873,8 +873,6 @@ views.settings = async function () {
           ${emailStat.lastCheck?.at ? `<div class="inline-note" style="margin-top:8px">Last check: ${new Date(emailStat.lastCheck.at).toLocaleString()} — ${emailStat.lastCheck.error ? 'error: ' + esc(emailStat.lastCheck.error) : `processed ${emailStat.lastCheck.result.processed}, skipped ${emailStat.lastCheck.result.skipped}`}</div>` : ''}
         </div>
       </div>
-
-      <button class="btn primary" id="settings-save">Save settings</button>
     </div>
 
     <h3 style="margin:26px 0 10px;font-size:14.5px">Backup &amp; export</h3>
@@ -934,10 +932,23 @@ views.settings = async function () {
     email_poll_minutes: Number($('#set-email-poll').value) || 15,
   } });
 
-  $('#settings-save').addEventListener('click', async () => {
-    await saveSettings();
-    toast('Settings saved');
-    views.settings();
+  // Auto-save: radios/checkboxes persist immediately, typing is debounced.
+  let saveTimer, statusTimer;
+  const autoSave = async () => {
+    try {
+      await saveSettings();
+      const el = $('#save-status');
+      el.textContent = ' Saved ✓';
+      clearTimeout(statusTimer);
+      statusTimer = setTimeout(() => { el.textContent = ''; }, 2000);
+    } catch (err) {
+      toast('Could not save settings: ' + err.message);
+    }
+  };
+  const queueSave = () => { clearTimeout(saveTimer); saveTimer = setTimeout(autoSave, 600); };
+  $$('.settings-form input').forEach(i => {
+    i.addEventListener('input', queueSave);
+    i.addEventListener('change', queueSave);
   });
 
   $$('.ai-test').forEach(btn => btn.addEventListener('click', async e => {
@@ -966,6 +977,7 @@ views.settings = async function () {
     out.className = 'test-result'; out.textContent = 'Checking…';
     e.target.disabled = true;
     try {
+      await saveSettings(); // check with what's on screen, not what was saved earlier
       const r = await api('/email/check', { method: 'POST' });
       out.className = 'test-result ok';
       out.textContent = `✓ Processed ${r.processed} new message${r.processed === 1 ? '' : 's'} (${r.skipped} skipped)`;
