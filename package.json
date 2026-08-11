@@ -11,7 +11,7 @@
   "scripts": {
     "start": "node server.js",
     "app": "electron .",
-    "dev": "HSA_NO_AUTOEXIT=1 node --watch server.js",
+    "dev": "HSA_NO_AUTOEXIT=1 PORT=8322 node --watch server.js",
     "make-launcher": "bash scripts/make-launcher.sh",
     "dist": "electron-builder --mac dir",
     "installer": "bash scripts/make-installer.sh"

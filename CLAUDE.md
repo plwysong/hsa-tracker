@@ -5,7 +5,7 @@ Local-first Mac desktop app (Electron + Express + Node built-in `node:sqlite`, n
 ## Commands
 
 - `npm start` — headless browser mode at http://localhost:8321 (auto-quits ~3 min after the last tab closes; heartbeats from the page keep it alive)
-- `npm run dev` — same, with `--watch` and auto-exit disabled (`HSA_NO_AUTOEXIT=1`)
+- `npm run dev` — same, with `--watch` and auto-exit disabled (`HSA_NO_AUTOEXIT=1`), on **port 8322** so it never collides with the installed app on 8321 (open http://localhost:8322)
 - `npm run app` — the real desktop window (Electron)
 - `npm run installer` — full production build: packages the app, ad-hoc signs it, produces `dist/HSA Tracker Installer.dmg`
 - `npm run make-launcher` — (legacy) rebuilds a Desktop launcher app; normally unused since the app installs to /Applications
@@ -26,7 +26,7 @@ To deploy the current build to this machine's /Applications:
 - **Never use electron-builder's dmg target** — it corrupts the ad-hoc signature. `scripts/make-installer.sh` (used by `npm run installer`) builds the DMG with hdiutil instead.
 - **Packaged app data** lives at `~/Library/Application Support/HSA Tracker/data/` (explicit `HSA_DATA_DIR` set in electron.js — don't trust Electron's userData naming). Folder-mode data lives in `./data/` (gitignored). **Updates must never touch user data.**
 - `node:sqlite` prints an ExperimentalWarning on start — normal, ignore.
-- Port 8321; server binds 127.0.0.1 only. `EADDRINUSE` means an app instance is already running and is tolerated (server reuses it).
+- Port 8321 for `npm start` and the packaged app; `npm run dev` uses 8322 (via `PORT`). Server binds 127.0.0.1 only. `EADDRINUSE` means an app instance is already running and is tolerated (server reuses it) — this is why dev was moved off 8321, so `npm run dev` alongside the installed app doesn't make the app display the dev database.
 - AI triage providers: `anthropic-api` (default, Claude Sonnet 5), `openai-api` (GPT-4o mini), `keywords` (offline fallback — also engaged automatically on API failure). On a "model not found" API error the code self-heals by querying the provider's model list and switching (see `resolveModelNotFound` in src/lib/triage.js).
 - The frontend is no-build: edits to `public/` are served immediately in dev, but the packaged app bundles them — rebuild + redeploy for /Applications changes.
 

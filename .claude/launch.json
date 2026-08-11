@@ -5,7 +5,7 @@
       "name": "hsa-tracker",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
-      "port": 8321
+      "port": 8322
     },
     {
       "name": "hsa-tracker-isolated",
