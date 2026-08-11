@@ -830,9 +830,54 @@ views.settings = async function () {
   const emailStat = await api('/email/status');
 
   main.innerHTML = `
-    <div class="page-head"><div><h1>Settings</h1><div class="sub">Backups, AI engine, email ingestion, and history.</div></div></div>
+    <div class="page-head"><div><h1>Settings</h1><div class="sub">AI engine, email ingestion, and backups.</div></div></div>
 
-    <h3 style="margin:0 0 10px;font-size:14.5px">Backup &amp; export</h3>
+    <div class="settings-form">
+      <div class="card settings-section">
+        <h3>AI eligibility triage</h3>
+        <div class="s-sub">How receipts are split into line items and judged for HSA eligibility.</div>
+        <div class="radio-row">
+          <label><input type="radio" name="ai" value="anthropic-api" ${s.ai_provider === 'anthropic-api' ? 'checked' : ''}>
+            <span><strong>Claude (Anthropic) API key</strong> (recommended)
+            <span class="r-sub">Create a key at <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> and paste it below. Uses Claude's Sonnet model, kept up to date automatically — costs pennies per receipt.</span></span></label>
+          <div class="field ai-fields" data-provider="anthropic-api" ${s.ai_provider !== 'anthropic-api' ? 'hidden' : ''}>
+            <label>Anthropic API key</label>
+            <input type="password" id="set-api-key" value="${esc(s.anthropic_api_key)}" placeholder="sk-ant-…">
+            <div class="test-row"><button class="btn small ai-test">Test connection</button><span class="test-result"></span></div>
+          </div>
+          <label><input type="radio" name="ai" value="openai-api" ${s.ai_provider === 'openai-api' ? 'checked' : ''}>
+            <span><strong>ChatGPT (OpenAI) API key</strong>
+            <span class="r-sub">Same idea with OpenAI's models. Create a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a> and paste it below. Uses OpenAI's small "mini" model, kept up to date automatically — costs pennies per receipt.</span></span></label>
+          <div class="field ai-fields" data-provider="openai-api" ${s.ai_provider !== 'openai-api' ? 'hidden' : ''}>
+            <label>OpenAI API key</label>
+            <input type="password" id="set-openai-key" value="${esc(s.openai_api_key)}" placeholder="sk-…">
+            <div class="test-row"><button class="btn small ai-test">Test connection</button><span class="test-result"></span></div>
+          </div>
+          <label><input type="radio" name="ai" value="keywords" ${s.ai_provider === 'keywords' ? 'checked' : ''}>
+            <span><strong>No AI (offline keyword matching)</strong>
+            <span class="r-sub">Free and private, but coarse — only flags items with obvious medical keywords.</span></span></label>
+        </div>
+      </div>
+
+      <div class="card settings-section">
+        <h3>Email ingestion (optional)</h3>
+        <div class="s-sub">Point this at a dedicated free email account (e.g. a new Gmail with an <a href="https://myaccount.google.com/apppasswords" target="_blank">app password</a>) and forward receipts to it. The app polls it over IMAP — nothing is exposed publicly, and it only runs while the app is running.</div>
+        <div class="field"><label><input type="checkbox" id="set-email-enabled" ${s.email_enabled ? 'checked' : ''} style="width:auto;margin-right:6px">Enable email ingestion</label></div>
+        <div id="email-fields" ${s.email_enabled ? '' : 'hidden'}>
+          <div class="field"><label>IMAP host</label><input id="set-email-host" value="${esc(s.email_host)}"></div>
+          <div class="field"><label>IMAP port</label><input id="set-email-port" type="number" value="${esc(s.email_port)}"></div>
+          <div class="field"><label>Email address</label><input id="set-email-user" value="${esc(s.email_user)}" placeholder="my-hsa-receipts@gmail.com"></div>
+          <div class="field"><label>App password</label><input id="set-email-pass" type="password" value="${esc(s.email_password)}"></div>
+          <div class="field"><label>Check every (minutes)</label><input id="set-email-poll" type="number" value="${esc(s.email_poll_minutes)}"></div>
+          <button class="btn small" id="email-check">Check inbox now</button><span class="test-result" id="email-test-result"></span>
+          ${emailStat.lastCheck?.at ? `<div class="inline-note" style="margin-top:8px">Last check: ${new Date(emailStat.lastCheck.at).toLocaleString()} — ${emailStat.lastCheck.error ? 'error: ' + esc(emailStat.lastCheck.error) : `processed ${emailStat.lastCheck.result.processed}, skipped ${emailStat.lastCheck.result.skipped}`}</div>` : ''}
+        </div>
+      </div>
+
+      <button class="btn primary" id="settings-save">Save settings</button>
+    </div>
+
+    <h3 style="margin:26px 0 10px;font-size:14.5px">Backup &amp; export</h3>
     <div class="export-grid" style="margin-bottom:8px">
       <div class="card export-card">
         <h3>⇩ Everything (zip)</h3>
@@ -852,66 +897,30 @@ views.settings = async function () {
       </div>
       <div class="card export-card">
         <h3>{ } Full data (JSON)</h3>
-        <p>Machine-readable export of every table, including the audit history below.</p>
+        <p>Machine-readable export of every table, including the full audit history.</p>
         <a class="btn" href="/api/export/json">Download JSON</a>
       </div>
     </div>
     <p class="inline-note" style="margin:0 0 22px">Individual receipts can be downloaded from Ledger → Receipts.</p>
 
+    ${navigator.userAgent.includes('Electron') ? '' : `
     <div class="settings-form">
-      <div class="card settings-section">
-        <h3>AI eligibility triage</h3>
-        <div class="s-sub">How receipts are split into line items and judged for HSA eligibility.</div>
-        <div class="radio-row">
-          <label><input type="radio" name="ai" value="anthropic-api" ${s.ai_provider === 'anthropic-api' ? 'checked' : ''}>
-            <span><strong>Claude (Anthropic) API key</strong> (recommended)
-            <span class="r-sub">Create a key at <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> and paste it below. Uses Claude's Sonnet model, kept up to date automatically — costs pennies per receipt.</span></span></label>
-          <label><input type="radio" name="ai" value="openai-api" ${s.ai_provider === 'openai-api' ? 'checked' : ''}>
-            <span><strong>ChatGPT (OpenAI) API key</strong>
-            <span class="r-sub">Same idea with OpenAI's models. Create a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a> and paste it below. Uses OpenAI's small "mini" model, kept up to date automatically — costs pennies per receipt.</span></span></label>
-          <label><input type="radio" name="ai" value="keywords" ${s.ai_provider === 'keywords' ? 'checked' : ''}>
-            <span><strong>No AI (offline keyword matching)</strong>
-            <span class="r-sub">Free and private, but coarse — only flags items with obvious medical keywords.</span></span></label>
-        </div>
-        <div class="field ai-fields" data-provider="anthropic-api" ${s.ai_provider !== 'anthropic-api' ? 'hidden' : ''}>
-          <label>Anthropic API key</label>
-          <input type="password" id="set-api-key" value="${esc(s.anthropic_api_key)}" placeholder="sk-ant-…">
-        </div>
-        <div class="field ai-fields" data-provider="openai-api" ${s.ai_provider !== 'openai-api' ? 'hidden' : ''}>
-          <label>OpenAI API key</label>
-          <input type="password" id="set-openai-key" value="${esc(s.openai_api_key)}" placeholder="sk-…">
-        </div>
-        <button class="btn small" id="ai-test">Test triage engine</button><span class="test-result" id="ai-test-result"></span>
-      </div>
-
-      <div class="card settings-section">
-        <h3>Email ingestion (optional)</h3>
-        <div class="s-sub">Point this at a dedicated free email account (e.g. a new Gmail with an <a href="https://myaccount.google.com/apppasswords" target="_blank">app password</a>) and forward receipts to it. The app polls it over IMAP — nothing is exposed publicly, and it only runs while the app is running.</div>
-        <div class="field"><label><input type="checkbox" id="set-email-enabled" ${s.email_enabled ? 'checked' : ''} style="width:auto;margin-right:6px">Enable periodic inbox checking</label></div>
-        <div class="field"><label>IMAP host</label><input id="set-email-host" value="${esc(s.email_host)}"></div>
-        <div class="field"><label>IMAP port</label><input id="set-email-port" type="number" value="${esc(s.email_port)}"></div>
-        <div class="field"><label>Email address</label><input id="set-email-user" value="${esc(s.email_user)}" placeholder="my-hsa-receipts@gmail.com"></div>
-        <div class="field"><label>App password</label><input id="set-email-pass" type="password" value="${esc(s.email_password)}"></div>
-        <div class="field"><label>Check every (minutes)</label><input id="set-email-poll" type="number" value="${esc(s.email_poll_minutes)}"></div>
-        <button class="btn small" id="email-check">Check inbox now</button><span class="test-result" id="email-test-result"></span>
-        ${emailStat.lastCheck?.at ? `<div class="inline-note" style="margin-top:8px">Last check: ${new Date(emailStat.lastCheck.at).toLocaleString()} — ${emailStat.lastCheck.error ? 'error: ' + esc(emailStat.lastCheck.error) : `processed ${emailStat.lastCheck.result.processed}, skipped ${emailStat.lastCheck.result.skipped}`}</div>` : ''}
-      </div>
-
-      <button class="btn primary" id="settings-save">Save settings</button>
-
-      ${navigator.userAgent.includes('Electron') ? '' : `
       <div class="card settings-section" style="margin-top:16px">
         <h3>App</h3>
         <div class="s-sub">HSA Tracker works like a regular app: the icon opens it, and a few minutes after you close this tab it shuts itself down. Receipt processing and email checking happen while it's open.</div>
         <button class="btn small ghost" id="app-quit">Quit now instead of waiting</button>
-      </div>`}
-    </div>
+      </div>
+    </div>`}
 `;
 
   $$('input[name="ai"]').forEach(r => r.addEventListener('change', () => {
     const v = document.querySelector('input[name="ai"]:checked').value;
     $$('.ai-fields').forEach(f => f.hidden = f.dataset.provider !== v);
   }));
+
+  $('#set-email-enabled').addEventListener('change', e => {
+    $('#email-fields').hidden = !e.target.checked;
+  });
 
   const saveSettings = () => api('/settings', { method: 'PUT', body: {
     ai_provider: document.querySelector('input[name="ai"]:checked').value,
@@ -931,8 +940,8 @@ views.settings = async function () {
     views.settings();
   });
 
-  $('#ai-test').addEventListener('click', async e => {
-    const out = $('#ai-test-result');
+  $$('.ai-test').forEach(btn => btn.addEventListener('click', async e => {
+    const out = e.target.nextElementSibling;
     out.className = 'test-result'; out.textContent = 'Saving & testing… (can take ~20s)';
     e.target.disabled = true;
     try {
@@ -945,7 +954,7 @@ views.settings = async function () {
       out.textContent = '✗ ' + err.message;
     }
     e.target.disabled = false;
-  });
+  }));
 
   $('#app-quit')?.addEventListener('click', async () => {
     try { await api('/quit', { method: 'POST' }); } catch { }
