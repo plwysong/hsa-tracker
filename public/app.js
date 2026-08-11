@@ -998,10 +998,16 @@ views.settings = async function () {
   const autoSave = async () => {
     try {
       await saveSettings();
+      // Toast is visible wherever you are on the page; the header tick is a quiet
+      // secondary cue when you're near the top. (The old header-only indicator was
+      // off-screen when editing the email section at the bottom.)
+      toast('Settings saved');
       const el = $('#save-status');
-      el.textContent = ' Saved ✓';
-      clearTimeout(statusTimer);
-      statusTimer = setTimeout(() => { el.textContent = ''; }, 2000);
+      if (el) {
+        el.textContent = ' Saved ✓';
+        clearTimeout(statusTimer);
+        statusTimer = setTimeout(() => { el.textContent = ''; }, 2000);
+      }
     } catch (err) {
       toast('Could not save settings: ' + err.message);
     }
