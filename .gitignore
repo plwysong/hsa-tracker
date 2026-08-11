@@ -2,6 +2,15 @@
 # the SQLite database and every stored receipt live here.
 data/
 
+# Exported backups — same sensitive data (ledger, receipts, rationale) in a
+# portable form. Never belongs in the repo, wherever it lands.
+*.zip
+HSA-*.csv
+HSA-*.json
+HSA-*.pdf
+HSA-full-backup*
+HSA-receipts*
+
 node_modules/
 .DS_Store
 *.log
