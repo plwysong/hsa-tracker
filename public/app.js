@@ -841,16 +841,16 @@ views.receipts = async function () {
     </div>
 
     <div class="card"><div class="table-wrap"><table class="data" id="rc-table">
-      <thead><tr><th data-sort="received">Received</th><th data-sort="file">File</th><th data-sort="source">Source</th><th class="num" data-sort="items" data-type="num">Line items</th><th class="num" data-sort="discarded" data-type="num">Discarded</th><th></th></tr></thead>
+      <thead><tr><th data-sort="received">Received</th><th data-sort="file">File</th><th class="rc-extra" data-sort="source">Source</th><th class="num" data-sort="items" data-type="num">Line items</th><th class="num rc-extra" data-sort="discarded" data-type="num">Discarded</th><th></th></tr></thead>
       <tbody>
         ${receipts.map(r => `
         <tr>
           <td style="white-space:nowrap" data-v="${esc(r.received_at)}">${fmtDate(r.received_at)}</td>
           <td data-v="${esc(r.original_name || r.filename)}">${esc(r.original_name || r.filename)}${!r.has_text && !r.expense_count && !r.discarded_count
             ? `<div class="muted small">Couldn't be read — use Re-triage to try again, or Add expense.</div>` : ''}</td>
-          <td><span class="chip src">${esc(r.source)}</span></td>
+          <td class="rc-extra"><span class="chip src">${esc(r.source)}</span></td>
           <td class="num">${r.expense_count}</td>
-          <td class="num">${r.discarded_count}</td>
+          <td class="num rc-extra">${r.discarded_count}</td>
           <td class="actions-cell">
             <button class="btn small ghost" data-act="open" data-id="${r.id}">${icon('eye')} View</button>
             <a class="btn small ghost" href="/api/receipts/${r.id}/file?download=1">${icon('download')} Download</a>

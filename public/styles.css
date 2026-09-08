@@ -232,6 +232,12 @@ table.data tr:last-child td { border-bottom: none; }
 table.data tr:hover td { background: color-mix(in srgb, var(--ink) 2.5%, transparent); }
 table.data .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 table.data .actions-cell { white-space: nowrap; text-align: right; }
+/* The Receipts table carries six actions per row — let them wrap onto a second
+   line at narrow widths instead of pushing the last ones off-screen. */
+#rc-table .actions-cell { white-space: normal; min-width: 236px; }
+#rc-table .actions-cell .btn { margin: 2px 0 2px 4px; }
+#rc-table td:nth-child(2) { min-width: 140px; }
+@media (max-width: 1180px) { #rc-table .rc-extra { display: none; } }
 tfoot td { font-weight: 700; border-top: 1px solid var(--baseline); }
 
 /* ---------- Dropzone / upload ---------- */
@@ -342,6 +348,7 @@ pre.rawtext {
   .brand { padding: 6px 10px; width: 100%; }
   .nav-item { width: auto; padding: 7px 11px; }
   .sidebar .spacer, .sidebar .foot { display: none; }
+  .side-email { width: auto; margin: 0; }
   .main { padding: 18px 14px 60px; }
   .item { flex-wrap: wrap; }
   .item .i-actions { width: 100%; justify-content: flex-start; }
