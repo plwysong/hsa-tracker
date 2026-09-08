@@ -57,20 +57,54 @@ async function heicToJpeg(buffer) {
   return Buffer.from(await heicConvert({ buffer, format: 'JPEG', quality: 0.9 }));
 }
 
-export async function ocrImage(buffer) {
-  const { createWorker } = await import('tesseract.js');
+// The English model ships with the app (@tesseract.js-data/eng) so OCR never
+// downloads anything. 4.0.0_best_int is the variant tesseract.js requests for
+// its default LSTM-only mode.
+//
+// tesseract.js decides whether `langPath` is a URL or a directory by sniffing
+// its environment, and inside Electron (even in a worker thread) it reports
+// "electron", treats the path as a URL, and hands it to node-fetch — which
+// throws "Only absolute URLs are supported". Its cache lookup, however, is a
+// plain file read in every environment, so we stage the bundled model under
+// the exact name the cache expects (`eng.traineddata`; gzip is auto-detected)
+// and load it via `cachePath` in read-only mode.
+let ocrModelDir = null;
+async function ensureOcrModel() {
+  if (ocrModelDir) return ocrModelDir;
   const { createRequire } = await import('node:module');
   const path = await import('node:path');
-  // The English model ships with the app (@tesseract.js-data/eng) so OCR never
-  // downloads anything. 4.0.0_best_int is the variant tesseract.js requests for
-  // its default LSTM-only mode; cacheMethod 'none' stops it from writing a
-  // duplicate copy of the model into the process working directory.
-  const langPath = path.join(
+  const os = await import('node:os');
+  const fs = await import('node:fs/promises');
+  const src = path.join(
     path.dirname(createRequire(import.meta.url).resolve('@tesseract.js-data/eng/package.json')),
-    '4.0.0_best_int');
-  const worker = await createWorker('eng', undefined, { langPath, cacheMethod: 'none', gzip: true });
+    '4.0.0_best_int', 'eng.traineddata.gz');
+  const dir = path.join(os.tmpdir(), 'hsa-tracker-ocr');
+  const dest = path.join(dir, 'eng.traineddata');
+  const want = (await fs.stat(src)).size;
+  const have = await fs.stat(dest).then((s) => s.size).catch(() => -1);
+  if (have !== want) {
+    await fs.mkdir(dir, { recursive: true });
+    await fs.copyFile(src, dest);
+  }
+  ocrModelDir = dir;
+  return dir;
+}
+
+export async function ocrImage(buffer) {
+  const { createWorker } = await import('tesseract.js');
+  const cachePath = await ensureOcrModel();
+  // Without an errorHandler, tesseract.js rethrows worker failures as an
+  // uncaught exception — which takes down the whole app. Route them into a
+  // rejection instead so the upload fails with a message and nothing else.
+  let failWorker;
+  const failed = new Promise((_, reject) => { failWorker = reject; });
+  const errorHandler = (err) => failWorker(new Error(`OCR failed: ${err}`));
+  const worker = await Promise.race([
+    createWorker('eng', undefined, { cachePath, cacheMethod: 'readOnly', gzip: true, errorHandler }),
+    failed,
+  ]);
   try {
-    const { data } = await worker.recognize(buffer);
+    const { data } = await Promise.race([worker.recognize(buffer), failed]);
     return (data.text || '').trim();
   } finally {
     await worker.terminate();
