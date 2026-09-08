@@ -115,8 +115,9 @@ api.get('/stats', wrap((req, res) => {
 
 // ---------- Expenses ----------
 api.get('/expenses', wrap((req, res) => {
-  const { status, category, year, q, confidence, source, reimbursed } = req.query;
+  const { status, category, year, q, confidence, source, reimbursed, receipt_id } = req.query;
   const clauses = [], params = [];
+  if (receipt_id) { clauses.push('e.receipt_id = ?'); params.push(Number(receipt_id)); }
   if (status) { clauses.push('e.status = ?'); params.push(status); }
   if (category) { clauses.push('e.category = ?'); params.push(category); }
   if (year) { clauses.push('substr(e.date, 1, 4) = ?'); params.push(String(year)); }
@@ -265,6 +266,8 @@ api.get('/receipts', wrap((req, res) => {
       (length(trim(r.raw_text)) >= 10) AS has_text,
       (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id) AS expense_count,
       (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id AND e.status = 'approved') AS approved_count,
+      (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id AND e.status = 'pending_review') AS pending_count,
+      (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id AND e.status = 'rejected') AS rejected_count,
       (SELECT COUNT(*) FROM discarded d WHERE d.receipt_id = r.id) AS discarded_count
     FROM receipts r ORDER BY r.received_at DESC, r.id DESC
   `).all();

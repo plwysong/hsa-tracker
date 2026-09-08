@@ -1,7 +1,7 @@
 // Shared ingestion pipeline: file buffer → dedup → store → extract text → AI triage
 // → pending review queue (eligible / needs_judgment) + discarded log (not_eligible).
 // Runs async with an in-memory job tracker so the UI can show live progress.
-import { writeFileSync, readFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, unlinkSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { db, RECEIPTS_DIR, sha256File, audit } from '../db.js';
 import { extractText } from './extract.js';
@@ -234,6 +234,29 @@ async function extractAndTriage(job, receiptId, buffer, mime, originalName, sour
 
   job.status = 'triaging';
   const triage = await triageReceipt(text);
+
+  // An email with no attachment whose body holds no purchases — a security
+  // alert, a newsletter — is not a receipt. File it on the skipped-emails list
+  // that Settings shows, drop the placeholder receipt, and leave the message in
+  // the inbox. Its message-id record stays so the poller won't fetch it again.
+  if (sourceDetail.bodyOnly && !triage.items.length) {
+    const reason = 'No purchases found in the message.';
+    const r = db.prepare('SELECT filename, sha256 FROM receipts WHERE id = ?').get(receiptId);
+    db.exec('BEGIN');
+    try {
+      db.prepare('INSERT INTO skipped_emails (message_id, from_addr, subject, reason, email_date) VALUES (?, ?, ?, ?, ?)')
+        .run(sourceDetail.messageId || '', sourceDetail.from || '', sourceDetail.subject || '', reason, sourceDetail.emailDate || '');
+      db.prepare('DELETE FROM receipts WHERE id = ?').run(receiptId);
+      if (r?.sha256) db.prepare("DELETE FROM processed_sources WHERE kind = 'file_sha256' AND ref = ?").run(r.sha256);
+      db.exec('COMMIT');
+    } catch (err) { db.exec('ROLLBACK'); throw err; }
+    if (r?.filename) { const fp = path.join(RECEIPTS_DIR, r.filename); if (existsSync(fp)) unlinkSync(fp); }
+    job.status = 'done';
+    job.receiptId = null;
+    job.detail = "No purchases found — listed in Settings under “Couldn't be read as receipts”, not as a receipt.";
+    audit('email_no_purchases', { subject: sourceDetail.subject, messageId: sourceDetail.messageId, reason });
+    return;
+  }
 
   // Order-level dedup, per line item: an amount already tracked under this order id
   // is skipped (consumed one-for-one), but genuinely new items — e.g. the rest of a

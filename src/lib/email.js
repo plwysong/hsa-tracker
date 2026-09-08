@@ -86,7 +86,7 @@ export async function checkEmailNow() {
               originalName: `${(parsed.subject || 'email').slice(0, 80)}.txt`,
               mime: 'text/plain',
               source: 'email',
-              sourceDetail,
+              sourceDetail: { ...sourceDetail, bodyOnly: true },
             });
             ingested = true;
           }

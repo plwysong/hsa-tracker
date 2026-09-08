@@ -232,12 +232,7 @@ table.data tr:last-child td { border-bottom: none; }
 table.data tr:hover td { background: color-mix(in srgb, var(--ink) 2.5%, transparent); }
 table.data .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 table.data .actions-cell { white-space: nowrap; text-align: right; }
-/* The Receipts table carries six actions per row — let them wrap onto a second
-   line at narrow widths instead of pushing the last ones off-screen. */
-#rc-table .actions-cell { white-space: normal; min-width: 236px; }
-#rc-table .actions-cell .btn { margin: 2px 0 2px 4px; }
-#rc-table td:nth-child(2) { min-width: 140px; }
-@media (max-width: 1180px) { #rc-table .rc-extra { display: none; } }
+
 tfoot td { font-weight: 700; border-top: 1px solid var(--baseline); }
 
 /* ---------- Dropzone / upload ---------- */
@@ -326,8 +321,30 @@ tfoot td { font-weight: 700; border-top: 1px solid var(--baseline); }
 .empty .big { font-size: 34px; margin-bottom: 8px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .muted { color: var(--muted); }
-.muted.small { font-size: 12px; margin-top: 2px; }
 .good-text { color: var(--good-text); }
+.warn-text { color: color-mix(in srgb, var(--warning) 55%, var(--ink)); }
+.bad-text { color: var(--critical); }
+
+/* Expenses / Receipts switch on the Ledger */
+.seg { display: inline-flex; background: color-mix(in srgb, var(--ink) 7%, transparent); border-radius: 9px; padding: 3px; }
+.seg button { border: none; background: none; padding: 6px 14px; border-radius: 7px; font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.seg button.on { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.10); }
+
+/* Receipt inspector */
+.drawer-sub { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+.rc-item { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--grid); font-size: 13px; }
+.rc-item:last-of-type { border-bottom: none; }
+.rc-item .num { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.menu-wrap { position: relative; }
+.menu {
+  position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 5; min-width: 180px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 4px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.14); display: flex; flex-direction: column;
+}
+.menu[hidden] { display: none; }
+.menu button { border: none; background: none; text-align: left; padding: 8px 10px; border-radius: 7px; font-size: 13px; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+.menu button:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.menu button.danger { color: var(--critical); }
 .section-gap { margin-top: 22px; }
 .toast {
   position: fixed; left: 50%; transform: translateX(-50%); bottom: 22px; z-index: 120;

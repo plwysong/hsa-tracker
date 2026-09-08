@@ -104,7 +104,8 @@ function navigate(view, opts = {}) {
   closeModal();
   main.onclick = main.onchange = null; // drop the previous view's delegated handlers
   location.hash = '#/' + view;
-  $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  const navView = view === 'receipts' ? 'ledger' : view;
+  $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === navView));
   views[view](opts);
   refreshBadge();
 }
@@ -619,7 +620,7 @@ views.ledger = async function () {
         <div class="sub">The permanent record. Click any row to inspect its evidence.</div>
       </div>
       <div class="actions">
-        <button class="btn" id="lg-receipts">${icon('file')} Receipts</button>
+        ${ledgerSwitch('ledger')}
         <button class="btn primary" id="lg-add">${icon('plus')} Add expense</button>
       </div>
     </div>
@@ -701,7 +702,7 @@ views.ledger = async function () {
   $('#lg-cat').addEventListener('change', e => { ledgerFilters.category = e.target.value; refresh(); });
   $('#lg-year').addEventListener('change', e => { ledgerFilters.year = e.target.value; refresh(); });
   $('#lg-reimb').addEventListener('change', e => { ledgerFilters.reimbursed = e.target.value; refresh(); });
-  $('#lg-receipts').addEventListener('click', () => navigate('receipts'));
+  wireLedgerSwitch();
   $('#lg-add').addEventListener('click', () => {
     editExpenseModal(null, settings, async body => {
       await api('/expenses', { method: 'POST', body });
@@ -818,116 +819,209 @@ views.ledger = async function () {
 };
 
 // ---------------- Receipts ----------------
+// Ledger has two faces — the expenses and the documents behind them.
+const ledgerSwitch = active => `
+  <div class="seg" role="tablist">
+    <button class="${active === 'ledger' ? 'on' : ''}" data-seg="ledger" role="tab">Expenses</button>
+    <button class="${active === 'receipts' ? 'on' : ''}" data-seg="receipts" role="tab">Receipts</button>
+  </div>`;
+const wireLedgerSwitch = () => $$('.seg button').forEach(b => b.addEventListener('click', () => { if (currentView !== b.dataset.seg) navigate(b.dataset.seg); }));
+
+// One plain-words status per receipt, in place of a row of counters.
+function receiptSummary(r) {
+  const parts = [];
+  if (r.approved_count) parts.push(`${r.approved_count} approved`);
+  if (r.pending_count) parts.push(`${r.pending_count} to review`);
+  if (r.rejected_count) parts.push(`${r.rejected_count} rejected`);
+  if (parts.length) {
+    const cls = r.pending_count ? 'warn-text' : r.approved_count ? 'good-text' : 'muted';
+    return { text: parts.join(' · '), cls, order: 10 + r.approved_count + r.pending_count + r.rejected_count };
+  }
+  if (r.discarded_count) return { text: 'Nothing eligible', cls: 'muted', order: 2 };
+  if (!r.has_text) return { text: "Couldn't be read", cls: 'bad-text', order: 0 };
+  return { text: 'Nothing found', cls: 'muted', order: 1 };
+}
+
+let receiptRows = [];
 views.receipts = async function () {
   main.innerHTML = '<div class="empty">Loading…</div>';
-  const receipts = await api('/receipts');
+  receiptRows = await api('/receipts');
   const settings = await api('/settings');
 
   main.innerHTML = `
     <div class="page-head">
       <div>
-        <h1>Receipts</h1>
-        <div class="sub">Every source document, stored durably and linked to its expenses.</div>
+        <h1>Ledger</h1>
+        <div class="sub">Every source document, kept with the expenses it backs. Drop a file anywhere in the app to add one.</div>
       </div>
       <div class="actions">
-        <button class="btn" id="rc-back">${icon('arrowLeft')} Ledger</button>
+        ${ledgerSwitch('receipts')}
         <button class="btn primary" id="rc-upload">${icon('upload')} Upload receipts</button>
       </div>
     </div>
 
-    <div class="dropzone" id="rc-dropzone">
-      <strong>Drag &amp; drop receipts here</strong> (or anywhere in the app) — PDF, JPG, PNG, HEIC, TIFF<br>
-      <span class="muted">Each file is text-extracted, split into line items, and AI-triaged into the review queue.</span>
-    </div>
-
     <div class="card"><div class="table-wrap"><table class="data" id="rc-table">
-      <thead><tr><th data-sort="received">Received</th><th data-sort="file">File</th><th class="rc-extra" data-sort="source">Source</th><th class="num" data-sort="items" data-type="num">Line items</th><th class="num rc-extra" data-sort="discarded" data-type="num">Discarded</th><th></th></tr></thead>
+      <thead><tr><th data-sort="received">Received</th><th data-sort="file">File</th><th data-sort="items" data-type="num">Items</th></tr></thead>
       <tbody>
-        ${receipts.map(r => `
-        <tr>
+        ${receiptRows.map(r => { const sm = receiptSummary(r); return `
+        <tr class="row-click ${paneKey === 'receipt:' + r.id ? 'row-selected' : ''}" data-id="${r.id}">
           <td style="white-space:nowrap" data-v="${esc(r.received_at)}">${fmtDate(r.received_at)}</td>
-          <td data-v="${esc(r.original_name || r.filename)}">${esc(r.original_name || r.filename)}${!r.has_text && !r.expense_count && !r.discarded_count
-            ? `<div class="muted small">Couldn't be read — use Re-triage to try again, or Add expense.</div>` : ''}</td>
-          <td class="rc-extra"><span class="chip src">${esc(r.source)}</span></td>
-          <td class="num">${r.expense_count}</td>
-          <td class="num rc-extra">${r.discarded_count}</td>
-          <td class="actions-cell">
-            <button class="btn small ghost" data-act="open" data-id="${r.id}">${icon('eye')} View</button>
-            <a class="btn small ghost" href="/api/receipts/${r.id}/file?download=1">${icon('download')} Download</a>
-            <button class="btn small ghost" data-act="text" data-id="${r.id}">Extracted text</button>
-            <button class="btn small ghost" data-act="add-expense" data-id="${r.id}" title="Add an expense with this receipt attached as its evidence">${icon('plus')} Add expense</button>
-            <button class="btn small ghost" data-act="retriage" data-id="${r.id}" title="Re-run AI triage on this receipt's extracted text">${icon('refresh')} Re-triage</button>
-            <button class="btn small ghost danger" data-act="delete" data-id="${r.id}" data-name="${esc(r.original_name || r.filename)}" data-approved="${r.approved_count}" data-other="${r.expense_count - r.approved_count}" data-discarded="${r.discarded_count}" title="Permanently delete this receipt and everything from it">${icon('x')} Delete…</button>
-          </td>
-        </tr>`).join('') || '<tr><td colspan="6" class="empty">No receipts yet — drop one above.</td></tr>'}
+          <td>${esc(r.original_name || r.filename)}</td>
+          <td class="${sm.cls}" style="white-space:nowrap" data-v="${sm.order}">${sm.text}</td>
+        </tr>`; }).join('') || '<tr><td colspan="3" class="empty">No receipts yet — drop one anywhere in the app.</td></tr>'}
       </tbody>
     </table></div></div>`;
 
   sortable($('#rc-table'), 'receipts');
-  $('#rc-back').addEventListener('click', () => navigate('ledger'));
+  wireLedgerSwitch();
   $('#rc-upload').addEventListener('click', () => $('#file-input').click());
-  const dz = $('#rc-dropzone');
-  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
-  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
-  dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag'); uploadFiles(e.dataTransfer.files); });
 
-  main.onclick = async e => {
-    const btn = e.target.closest('button');
-    if (!btn) return;
-    if (btn.dataset.act === 'open') window.open(`/api/receipts/${btn.dataset.id}/file`, '_blank');
-    if (btn.dataset.act === 'delete') {
-      const { id, name } = btn.dataset;
-      const approved = Number(btn.dataset.approved), other = Number(btn.dataset.other), discarded = Number(btn.dataset.discarded);
-      const n = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
-      const parts = [];
-      if (approved) parts.push(`<strong>${n(approved, 'approved expense')}</strong> from your ledger`);
-      if (other) parts.push(n(other, 'item') + ' awaiting review or rejected');
-      if (discarded) parts.push(n(discarded, 'discarded item'));
-      openModal(`
-        <h3>Delete this receipt forever?</h3>
-        <p style="font-size:13px;color:var(--ink-2)"><strong>${esc(name)}</strong> and its extracted text will be removed permanently${parts.length ? ', along with ' + parts.join(', ') : ''}.
-        ${approved ? '<br><br>Those approved expenses are the evidence behind past withdrawals — only delete them if this receipt was added by mistake.' : ''}
-        ${approved || other ? '<br><br>If you are declining these as not eligible, use <strong>Reject</strong> in the Review queue instead — that keeps them for your audit trail.' : ''}
-        <br><br>The same file can be uploaded again afterwards.</p>
-        <div class="m-actions">
-          <button class="btn" data-close>Cancel</button>
-          <button class="btn" id="m-rc-del-ok" style="background:var(--critical);border-color:var(--critical);color:#fff">Delete forever</button>
-        </div>`);
-      $('#m-rc-del-ok').addEventListener('click', async () => {
-        closeModal();
+  const refresh = async keepId => {
+    await views.receipts();
+    if (keepId && receiptRows.some(r => r.id === keepId)) {
+      document.querySelector(`tr[data-id="${keepId}"]`)?.classList.add('row-selected');
+      openReceiptPane(keepId, settings, refresh);
+    } else {
+      closePane();
+    }
+  };
+
+  main.onclick = ev => {
+    const tr = ev.target.closest('tr[data-id]');
+    if (!tr || ev.target.closest('button, a')) return;
+    const id = Number(tr.dataset.id);
+    if (paneKey === 'receipt:' + id) { closePane(); return; }
+    $$('.row-selected').forEach(r => r.classList.remove('row-selected'));
+    tr.classList.add('row-selected');
+    openReceiptPane(id, settings, refresh);
+  };
+};
+
+function receiptPaneHtml(r, items) {
+  const name = r.original_name || r.filename;
+  const sm = receiptSummary(r);
+  const n = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
+  const goes = [];
+  if (r.approved_count) goes.push(`<strong>${n(r.approved_count, 'approved expense')}</strong>`);
+  if (r.pending_count + r.rejected_count) goes.push(n(r.pending_count + r.rejected_count, 'item') + ' awaiting review or rejected');
+  if (r.discarded_count) goes.push(n(r.discarded_count, 'discarded item'));
+  return `
+  <div class="drawer-head">
+    <div>
+      <h2>${esc(name)}</h2>
+      <div class="drawer-sub">${fmtDate(r.received_at)} · ${r.source === 'email' ? 'from email' : r.source === 'import' ? 'imported' : 'uploaded'} · <span class="${sm.cls}">${sm.text}</span></div>
+    </div>
+    <button class="btn small ghost drawer-close" title="Close" aria-label="Close">${icon('x')}</button>
+  </div>
+  <div class="drawer-body">
+    <div class="drawer-receipt"><iframe src="/api/receipts/${r.id}/file#toolbar=0" title="Receipt"></iframe></div>
+    <div class="drawer-section-title">Line items</div>
+    ${items.length ? items.map(e => `
+      <div class="rc-item">
+        <span>${esc(e.description)}<span class="muted"> · ${fmtDate(e.date)}</span></span>
+        <span class="num">${money(e.amount)} <span class="chip status-${e.status}">${e.status.replace('_', ' ')}</span></span>
+      </div>`).join('')
+      : `<p class="inline-note" style="margin:0">${r.has_text
+          ? 'Nothing eligible was found on this receipt. If that is wrong, re-run triage from More, or add the expense by hand.'
+          : 'This file could not be read. Try Re-triage from More, or add its line items by hand with Add expense.'}</p>`}
+    ${r.discarded_count ? `<p class="inline-note" style="margin:8px 0 0">${n(r.discarded_count, 'item')} auto-discarded as not eligible — <a href="#/discarded">view</a>.</p>` : ''}
+    <div id="rc-text" hidden>
+      <div class="drawer-section-title">Extracted text</div>
+      <pre class="rawtext" id="rc-text-body"></pre>
+    </div>
+    <div class="drawer-confirm" id="pane-confirm" hidden>
+      <div style="font-weight:650;font-size:13px;margin-bottom:3px">Delete this receipt forever?</div>
+      <div style="font-size:12.5px;color:var(--ink-2);margin-bottom:10px">The file and its extracted text are removed permanently${goes.length ? ', along with ' + goes.join(', ') : ''}.
+        ${r.approved_count ? '<br><br>Those approved expenses are the evidence behind past withdrawals — only delete them if this receipt was added by mistake.' : ''}
+        ${r.approved_count + r.pending_count ? '<br><br>If you are declining these as not eligible, use <strong>Reject</strong> instead — that keeps them for your audit trail.' : ''}
+        <br><br>The same file can be uploaded again afterwards.</div>
+      <button class="btn small" id="pane-delete-confirm" style="background:var(--critical);border-color:var(--critical);color:#fff">Delete forever</button>
+      <button class="btn small ghost" id="pane-delete-cancel">Cancel</button>
+    </div>
+  </div>
+  <div class="drawer-foot">
+    <button class="btn primary" data-pane-act="open">${icon('eye')} Open</button>
+    <button class="btn" data-pane-act="add-expense">${icon('plus')} Add expense</button>
+    <span style="flex:1"></span>
+    <div class="menu-wrap">
+      <button class="btn ghost" data-pane-act="more">More ▾</button>
+      <div class="menu" id="rc-menu" hidden>
+        <button data-pane-act="download">${icon('download')} Download</button>
+        <button data-pane-act="text">${icon('file')} Extracted text</button>
+        <button data-pane-act="retriage">${icon('refresh')} Re-triage</button>
+        <button class="danger" data-pane-act="delete">${icon('x')} Delete…</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+/** Opens the inspector for a receipt. `refresh(idToKeepOpen)` re-renders the host view. */
+async function openReceiptPane(id, settings, refresh) {
+  const r = receiptRows.find(x => x.id === id);
+  if (!r) return closePane();
+  const items = await api('/expenses?receipt_id=' + id);
+  openPane('receipt:' + id, receiptPaneHtml(r, items), pane => {
+    const menu = pane.querySelector('#rc-menu');
+    const closeMenu = () => { menu.hidden = true; document.removeEventListener('click', onDoc, true); };
+    const onDoc = ev => { if (!ev.target.closest('.menu-wrap')) closeMenu(); };
+    pane.onclick = async ev => {
+      const btn = ev.target.closest('button');
+      if (!btn) return;
+      if (btn.id === 'pane-delete-cancel') { pane.querySelector('#pane-confirm').hidden = true; return; }
+      if (btn.id === 'pane-delete-confirm') {
         try {
           await api(`/receipts/${id}`, { method: 'DELETE' });
           toast('Receipt deleted');
           refreshBadge();
-          views.receipts();
+          closePane();
+          refresh();
         } catch (err) { toast(err.message); }
-      });
-    }
-    if (btn.dataset.act === 'add-expense') {
-      const receiptId = Number(btn.dataset.id);
-      editExpenseModal(null, settings, async body => {
-        await api('/expenses', { method: 'POST', body: { ...body, receipt_id: receiptId } });
-        toast('Expense added to ledger with this receipt attached');
-        views.receipts();
-      });
-    }
-    if (btn.dataset.act === 'retriage') {
-      try {
-        await api(`/receipts/${btn.dataset.id}/retriage`, { method: 'POST' });
-        toast('Re-running triage…');
-        pollJobs();
-      } catch (err) { toast(err.message); }
-    }
-    if (btn.dataset.act === 'text') {
-      const { raw_text } = await api(`/receipts/${btn.dataset.id}/text`);
-      openModal(`<h3>Extracted text</h3>
-        <pre class="rawtext">${esc(raw_text || '(no text was extracted)')}</pre>
-        <div class="m-actions"><button class="btn" data-close>Close</button></div>`);
-    }
-  };
-};
+        return;
+      }
+      const act = btn.dataset.paneAct;
+      if (!act) return;
+      if (act === 'more') {
+        menu.hidden = !menu.hidden;
+        if (!menu.hidden) setTimeout(() => document.addEventListener('click', onDoc, true), 0);
+        return;
+      }
+      closeMenu();
+      if (act === 'open') window.open(`/api/receipts/${id}/file`, '_blank');
+      if (act === 'download') location.href = `/api/receipts/${id}/file?download=1`;
+      if (act === 'add-expense') {
+        editExpenseModal(null, settings, async body => {
+          await api('/expenses', { method: 'POST', body: { ...body, receipt_id: id } });
+          toast('Expense added to ledger with this receipt attached');
+          refresh(id);
+        });
+      }
+      if (act === 'retriage') {
+        try {
+          await api(`/receipts/${id}/retriage`, { method: 'POST' });
+          toast('Re-running triage…');
+          pollJobs();
+        } catch (err) { toast(err.message); }
+      }
+      if (act === 'text') {
+        const box = pane.querySelector('#rc-text');
+        if (box.hidden) {
+          const { raw_text } = await api(`/receipts/${id}/text`);
+          pane.querySelector('#rc-text-body').textContent = raw_text || '(no text was extracted)';
+          box.hidden = false;
+          box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        } else {
+          box.hidden = true;
+        }
+      }
+      if (act === 'delete') {
+        const c = pane.querySelector('#pane-confirm');
+        c.hidden = false;
+        c.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    };
+  });
+}
 
-// ---------------- Discarded ----------------
 views.discarded = async function () {
   main.innerHTML = '<div class="empty">Loading…</div>';
   const rows = await api('/discarded');
