@@ -262,6 +262,7 @@ api.post('/jobs/clear', wrap((req, res) => { clearFinishedJobs(req.body || {}); 
 api.get('/receipts', wrap((req, res) => {
   const rows = db.prepare(`
     SELECT r.id, r.filename, r.original_name, r.mime, r.source, r.received_at, r.meta,
+      (length(trim(r.raw_text)) >= 10) AS has_text,
       (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id) AS expense_count,
       (SELECT COUNT(*) FROM discarded d WHERE d.receipt_id = r.id) AS discarded_count
     FROM receipts r ORDER BY r.received_at DESC, r.id DESC

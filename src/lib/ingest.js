@@ -1,7 +1,7 @@
 // Shared ingestion pipeline: file buffer → dedup → store → extract text → AI triage
 // → pending review queue (eligible / needs_judgment) + discarded log (not_eligible).
 // Runs async with an in-memory job tracker so the UI can show live progress.
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { db, RECEIPTS_DIR, sha256File, audit } from '../db.js';
 import { extractText } from './extract.js';
@@ -60,7 +60,6 @@ export function ingestDocument(buffer, meta) {
 export function retriageReceipt(receiptId) {
   const receipt = db.prepare('SELECT * FROM receipts WHERE id = ?').get(receiptId);
   if (!receipt) throw new Error('Receipt not found');
-  if (!receipt.raw_text || receipt.raw_text.trim().length < 10) throw new Error('This receipt has no extracted text to triage — add entries manually instead.');
 
   const job = {
     id: ++jobCounter,
@@ -76,6 +75,15 @@ export function retriageReceipt(receiptId) {
   jobs.set(job.id, job);
 
   (async () => {
+    // A receipt whose extraction failed (or was cut short by a crash) has no text
+    // yet — re-read the stored file first, so Re-triage is the recovery path.
+    if (!hasText(receipt.raw_text)) {
+      job.status = 'extracting';
+      const buffer = readFileSync(path.join(RECEIPTS_DIR, receipt.filename));
+      receipt.raw_text = await extractInto(receiptId, buffer, receipt.mime, receipt.original_name, sourceDetailOf(receipt));
+      if (!hasText(receipt.raw_text)) throw new Error('Stored, but no readable text could be extracted — add line items manually with "Add expense".');
+      job.status = 'triaging';
+    }
     const triage = await triageReceipt(receipt.raw_text);
     // Replace this receipt's previous *pending* candidates and discards so re-runs don't stack
     // duplicates. Rows the user created themselves (manual adds, re-queued discards) are kept —
@@ -113,6 +121,31 @@ export function retriageReceipt(receiptId) {
   return job;
 }
 
+const hasText = (t) => !!t && t.trim().length >= 10;
+
+// The receipt's meta column holds source details (email headers etc.) plus the
+// extraction outcome; strip the outcome so it is rewritten, not stacked.
+function sourceDetailOf(receipt) {
+  const { extractMethod, extractError, ...detail } = JSON.parse(receipt.meta || '{}');
+  return detail;
+}
+
+// Extract text from a receipt's bytes and record the outcome on the row. Throws
+// on failure (after recording it) so the caller can surface it.
+async function extractInto(receiptId, buffer, mime, originalName, sourceDetail) {
+  let text, method;
+  try {
+    ({ text, method } = await extractText(buffer, mime, originalName));
+  } catch (err) {
+    db.prepare('UPDATE receipts SET meta = ? WHERE id = ?')
+      .run(JSON.stringify({ extractMethod: 'failed', extractError: err.message, ...sourceDetail }), receiptId);
+    throw err;
+  }
+  db.prepare('UPDATE receipts SET raw_text = ?, meta = ? WHERE id = ?')
+    .run(text, JSON.stringify({ extractMethod: method, ...sourceDetail }), receiptId);
+  return text;
+}
+
 function insertTriageResults(job, receiptId, triage, sourceType) {
   const insExpense = db.prepare(`
     INSERT INTO expenses (date, provider, category, description, amount, payment_method, status,
@@ -138,11 +171,22 @@ function insertTriageResults(job, receiptId, triage, sourceType) {
 async function processJob(job, buffer, meta) {
   // Idempotency: same file content is never processed twice
   const hash = sha256File(buffer);
-  const existing = db.prepare('SELECT id, filename FROM receipts WHERE sha256 = ?').get(hash);
+  const existing = db.prepare(`
+    SELECT id, filename, mime, original_name, source, meta, raw_text,
+      (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = receipts.id) AS expense_count
+    FROM receipts WHERE sha256 = ?`).get(hash);
   if (existing) {
-    job.status = 'duplicate';
     job.receiptId = existing.id;
-    job.detail = `Identical file already processed (receipt #${existing.id}) — skipped to avoid duplicate entries.`;
+    if (!hasText(existing.raw_text) && !existing.expense_count) {
+      // Stored earlier but never read (extraction failed or the app crashed mid-way).
+      // Dropping the same file again is the natural "try again" — resume from the
+      // stored copy rather than turning the user away.
+      job.name = existing.original_name || existing.filename;
+      await extractAndTriage(job, existing.id, buffer, existing.mime, existing.original_name, existing.source, sourceDetailOf(existing));
+      return;
+    }
+    job.status = 'duplicate';
+    job.detail = `Identical file already processed (receipt #${existing.id}) — skipped to avoid duplicate entries. Find it under Ledger → Receipts.`;
     return;
   }
 
@@ -166,25 +210,25 @@ async function processJob(job, buffer, meta) {
   job.receiptId = receiptId;
   db.prepare('INSERT OR IGNORE INTO processed_sources (kind, ref) VALUES (?, ?)').run('file_sha256', hash);
 
+  await extractAndTriage(job, receiptId, buffer, meta.mime, meta.originalName, meta.source, meta.sourceDetail);
+}
+
+async function extractAndTriage(job, receiptId, buffer, mime, originalName, source, sourceDetail = {}) {
   job.status = 'extracting';
-  let text = '', method = 'failed';
+  let text;
   try {
-    ({ text, method } = await extractText(buffer, meta.mime, meta.originalName));
+    text = await extractInto(receiptId, buffer, mime, originalName, sourceDetail);
   } catch (err) {
-    db.prepare('UPDATE receipts SET meta = ? WHERE id = ?')
-      .run(JSON.stringify({ extractMethod: 'failed', extractError: err.message, ...meta.sourceDetail }), receiptId);
     job.status = 'error';
-    job.detail = `The file was stored but could not be read (${err.message}) — add its line items manually from the Receipts tab.`;
-    audit('ingest_extract_error', { file: meta.originalName, receiptId, error: err.message });
+    job.detail = `The file was stored but could not be read (${err.message}) — drop it again to retry, or add its line items manually from Ledger → Receipts.`;
+    audit('ingest_extract_error', { file: originalName, receiptId, error: err.message });
     return;
   }
-  db.prepare('UPDATE receipts SET raw_text = ?, meta = ? WHERE id = ?')
-    .run(text, JSON.stringify({ extractMethod: method, ...meta.sourceDetail }), receiptId);
 
-  if (!text || text.trim().length < 10) {
+  if (!hasText(text)) {
     job.status = 'done';
-    job.detail = 'Stored, but no readable text could be extracted — add line items manually from the Receipts tab.';
-    audit('ingest_no_text', { file: meta.originalName, receiptId });
+    job.detail = 'Stored, but no readable text could be extracted — add line items manually from Ledger → Receipts.';
+    audit('ingest_no_text', { file: originalName, receiptId });
     return;
   }
 
@@ -216,18 +260,18 @@ async function processJob(job, buffer, meta) {
       if (!triage.items.length) {
         job.status = 'duplicate';
         job.detail = `All items from order ${triage.order_ref} are already in the tracker — skipped to avoid duplicates. Receipt file was kept.`;
-        audit('ingest_order_dup', { file: meta.originalName, orderRef: triage.order_ref });
+        audit('ingest_order_dup', { file: originalName, orderRef: triage.order_ref });
         return;
       }
       if (dupes) dupNote = `${dupes} item${dupes === 1 ? '' : 's'} already tracked under order ${triage.order_ref} skipped. `;
     }
   }
 
-  insertTriageResults(job, receiptId, triage, meta.source);
+  insertTriageResults(job, receiptId, triage, source);
 
   job.status = 'done';
   job.detail = dupNote + (triage.ai_error
     ? `AI triage unavailable — used keyword fallback. Re-check results. (${triage.ai_error})`
     : (triage.document_summary || ''));
-  audit('ingest_done', { file: meta.originalName, receiptId, queued: job.queued, discarded: job.discarded, provider: triage.ai_provider });
+  audit('ingest_done', { file: originalName, receiptId, queued: job.queued, discarded: job.discarded, provider: triage.ai_provider });
 }

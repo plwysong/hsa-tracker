@@ -31,6 +31,46 @@ const ICON_PATHS = {
   arrowLeft: '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 };
+// Column sorting for every data table. Click a heading to sort, again to flip.
+// Works on the rendered DOM (cells may carry data-v with a raw sort value) so
+// each view's delegated click handlers keep working, and the choice survives
+// the re-render that follows every action.
+const sortState = {};
+function sortable(table, key) {
+  if (!table) return;
+  const ths = [...table.querySelectorAll('thead th[data-sort]')];
+  const apply = () => {
+    const st = sortState[key];
+    ths.forEach(t => t.classList.remove('sort-asc', 'sort-desc'));
+    if (!st) return;
+    const th = ths.find(t => t.dataset.sort === st.col);
+    if (!th) return;
+    const idx = [...th.parentNode.children].indexOf(th);
+    const numeric = th.dataset.type === 'num';
+    const tbody = table.tBodies[0];
+    const rows = [...tbody.rows].filter(r => !r.querySelector('td.empty'));
+    const val = r => {
+      const td = r.cells[idx];
+      const v = td?.dataset.v ?? td?.textContent.trim() ?? '';
+      return numeric ? (parseFloat(v) || 0) : v.toLowerCase();
+    };
+    rows.map((r, i) => ({ r, i, v: val(r) }))
+      .sort((a, b) => ((a.v < b.v ? -1 : a.v > b.v ? 1 : 0) * st.dir) || (a.i - b.i))
+      .forEach(({ r }) => tbody.appendChild(r));
+    th.classList.add(st.dir > 0 ? 'sort-asc' : 'sort-desc');
+  };
+  ths.forEach(th => {
+    th.classList.add('sortable');
+    th.title = 'Sort by ' + th.textContent.trim().toLowerCase();
+    th.addEventListener('click', () => {
+      const st = sortState[key];
+      sortState[key] = st && st.col === th.dataset.sort ? { col: st.col, dir: -st.dir } : { col: th.dataset.sort, dir: 1 };
+      apply();
+    });
+  });
+  apply();
+}
+
 const icon = (name, size = 14) =>
   `<svg class="bicon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[name]}</svg>`;
 
@@ -73,6 +113,26 @@ $$('.nav-item').forEach(b => b.addEventListener('click', () => navigate(b.datase
 window.addEventListener('hashchange', () => {
   const v = location.hash.replace('#/', '') || 'dashboard';
   if (v !== currentView && views[v]) navigate(v);
+});
+
+// The forwarding address for emailed receipts, shown in the sidebar on every
+// page (only when email ingestion is set up). Click copies it.
+async function refreshEmailHint() {
+  const el = $('#side-email');
+  if (!el) return;
+  try {
+    const s = await api('/settings');
+    const addr = s.email_enabled && s.email_user ? String(s.email_user).trim() : '';
+    el.hidden = !addr;
+    el.dataset.addr = addr;
+    el.innerHTML = addr ? `<div class="se-label">Forward receipts to</div><div class="se-addr">${esc(addr)}</div><div class="se-copy">${icon('copy', 12)} click to copy</div>` : '';
+  } catch { /* server starting */ }
+}
+$('#side-email')?.addEventListener('click', async () => {
+  const addr = $('#side-email').dataset.addr;
+  if (!addr) return;
+  try { await navigator.clipboard.writeText(addr); toast('Email address copied'); }
+  catch { toast(addr); }
 });
 
 async function refreshBadge() {
@@ -217,16 +277,17 @@ views.dashboard = async function () {
     <div class="card">
       <div class="group-head"><span class="g-title">Recently approved</span>
         <span class="g-actions"><button class="btn small ghost" id="dash-ledger">Full ledger ${icon('arrowRight')}</button></span></div>
-      <div class="table-wrap"><table class="data">
-        <thead><tr><th>Date</th><th>Provider</th><th>Description</th><th>Category</th><th class="num">Amount</th></tr></thead>
+      <div class="table-wrap"><table class="data" id="dash-table">
+        <thead><tr><th data-sort="date">Date</th><th data-sort="provider">Provider</th><th data-sort="description">Description</th><th data-sort="category">Category</th><th class="num" data-sort="amount" data-type="num">Amount</th></tr></thead>
         <tbody>${s.recent.map(e => `
-          <tr><td>${fmtDate(e.date)}</td><td>${esc(e.provider)}</td><td>${esc(e.description)}</td>
-          <td><span class="chip cat">${esc(e.category)}</span></td><td class="num">${money(e.amount)}</td></tr>`).join('') ||
+          <tr><td data-v="${esc(e.date)}">${fmtDate(e.date)}</td><td>${esc(e.provider)}</td><td>${esc(e.description)}</td>
+          <td><span class="chip cat">${esc(e.category)}</span></td><td class="num" data-v="${e.amount}">${money(e.amount)}</td></tr>`).join('') ||
           '<tr><td colspan="5" class="empty">Nothing approved yet</td></tr>'}
         </tbody>
       </table></div>
     </div>`;
 
+  sortable($('#dash-table'), 'dashboard');
   $('#dash-upload')?.addEventListener('click', () => $('#file-input').click());
   $('#dash-review')?.addEventListener('click', () => navigate('review'));
   $('#dash-ledger')?.addEventListener('click', () => navigate('ledger'));
@@ -586,23 +647,23 @@ views.ledger = async function () {
       <span class="count">${rows.length} rows · ${money(total)}</span>
     </div>
 
-    <div class="card"><div class="table-wrap"><table class="data">
+    <div class="card"><div class="table-wrap"><table class="data" id="lg-table">
       <thead><tr>
         <th style="width:26px"><input type="checkbox" id="lg-all" title="Select all"></th>
-        <th>Date</th><th class="col-extra">Provider</th><th>Description</th><th class="col-extra">Category</th>
-        <th class="num">Amount</th><th>Status</th><th class="col-extra">Reimbursed</th>
+        <th data-sort="date">Date</th><th class="col-extra" data-sort="provider">Provider</th><th data-sort="description">Description</th><th class="col-extra" data-sort="category">Category</th>
+        <th class="num" data-sort="amount" data-type="num">Amount</th><th data-sort="status">Status</th><th class="col-extra" data-sort="reimbursed">Reimbursed</th>
       </tr></thead>
       <tbody>
         ${rows.map(e => `
         <tr class="row-click ${paneKey === 'expense:' + e.id ? 'row-selected' : ''}" data-id="${e.id}">
           <td><input type="checkbox" class="lg-check" data-id="${e.id}" ${ledgerSelected.has(e.id) ? 'checked' : ''}></td>
-          <td style="white-space:nowrap">${fmtDate(e.date)}</td>
+          <td style="white-space:nowrap" data-v="${esc(e.date)}">${fmtDate(e.date)}</td>
           <td class="col-extra">${esc(e.provider)}</td>
           <td>${esc(e.description)}</td>
           <td class="col-extra"><span class="chip cat">${esc(e.category)}</span></td>
-          <td class="num">${money(e.amount)}</td>
+          <td class="num" data-v="${e.amount}">${money(e.amount)}</td>
           <td><span class="chip status-${e.status}">${e.status.replace('_', ' ')}</span></td>
-          <td class="col-extra">${e.reimbursed ? `<span class="good-text">${icon('check')} ${fmtDate(e.date_reimbursed)}</span>` : '<span class="muted">No</span>'}</td>
+          <td class="col-extra" data-v="${e.reimbursed ? esc(e.date_reimbursed || '9999') : ''}">${e.reimbursed ? `<span class="good-text">${icon('check')} ${fmtDate(e.date_reimbursed)}</span>` : '<span class="muted">No</span>'}</td>
         </tr>`).join('') || '<tr><td colspan="8" class="empty">No matching expenses</td></tr>'}
       </tbody>
       ${rows.length ? `<tfoot><tr><td colspan="99" style="text-align:right">Total: ${money(total)}</td></tr></tfoot>` : ''}
@@ -634,6 +695,7 @@ views.ledger = async function () {
     }
   };
 
+  sortable($('#lg-table'), 'ledger');
   $('#lg-q').addEventListener('change', e => { ledgerFilters.q = e.target.value; refresh(); });
   $('#lg-status').addEventListener('change', e => { ledgerFilters.status = e.target.value; refresh(); });
   $('#lg-cat').addEventListener('change', e => { ledgerFilters.category = e.target.value; refresh(); });
@@ -778,13 +840,14 @@ views.receipts = async function () {
       <span class="muted">Each file is text-extracted, split into line items, and AI-triaged into the review queue.</span>
     </div>
 
-    <div class="card"><div class="table-wrap"><table class="data">
-      <thead><tr><th>Received</th><th>File</th><th>Source</th><th class="num">Line items</th><th class="num">Discarded</th><th></th></tr></thead>
+    <div class="card"><div class="table-wrap"><table class="data" id="rc-table">
+      <thead><tr><th data-sort="received">Received</th><th data-sort="file">File</th><th data-sort="source">Source</th><th class="num" data-sort="items" data-type="num">Line items</th><th class="num" data-sort="discarded" data-type="num">Discarded</th><th></th></tr></thead>
       <tbody>
         ${receipts.map(r => `
         <tr>
-          <td style="white-space:nowrap">${fmtDate(r.received_at)}</td>
-          <td>${esc(r.original_name || r.filename)}</td>
+          <td style="white-space:nowrap" data-v="${esc(r.received_at)}">${fmtDate(r.received_at)}</td>
+          <td data-v="${esc(r.original_name || r.filename)}">${esc(r.original_name || r.filename)}${!r.has_text && !r.expense_count && !r.discarded_count
+            ? `<div class="muted small">Couldn't be read — use Re-triage to try again, or Add expense.</div>` : ''}</td>
           <td><span class="chip src">${esc(r.source)}</span></td>
           <td class="num">${r.expense_count}</td>
           <td class="num">${r.discarded_count}</td>
@@ -799,6 +862,7 @@ views.receipts = async function () {
       </tbody>
     </table></div></div>`;
 
+  sortable($('#rc-table'), 'receipts');
   $('#rc-back').addEventListener('click', () => navigate('ledger'));
   $('#rc-upload').addEventListener('click', () => $('#file-input').click());
   const dz = $('#rc-dropzone');
@@ -846,14 +910,14 @@ views.discarded = async function () {
       </div>
       <div class="actions"><button class="btn" id="dc-back">${icon('arrowLeft')} Review</button></div>
     </div>
-    <div class="card"><div class="table-wrap"><table class="data">
-      <thead><tr><th>When</th><th>Item</th><th class="num">Amount</th><th>Why discarded</th><th>Receipt</th><th></th></tr></thead>
+    <div class="card"><div class="table-wrap"><table class="data" id="dc-table">
+      <thead><tr><th data-sort="when">When</th><th data-sort="item">Item</th><th class="num" data-sort="amount" data-type="num">Amount</th><th data-sort="why">Why discarded</th><th>Receipt</th><th></th></tr></thead>
       <tbody>
         ${rows.map(d => `
         <tr>
-          <td style="white-space:nowrap">${fmtDate(d.created_at)}</td>
+          <td style="white-space:nowrap" data-v="${esc(d.created_at)}">${fmtDate(d.created_at)}</td>
           <td>${esc(d.description)}</td>
-          <td class="num">${d.amount != null ? money(d.amount) : '—'}</td>
+          <td class="num" data-v="${d.amount ?? ''}">${d.amount != null ? money(d.amount) : '—'}</td>
           <td class="muted">${esc(d.reason)}</td>
           <td>${d.receipt_id ? `<button class="btn small ghost" data-act="view-receipt" data-rid="${d.receipt_id}">${icon('eye')}</button>` : '—'}</td>
           <td class="actions-cell">${d.amount != null ? `<button class="btn small ghost" data-act="requeue" data-id="${d.id}">${icon('undo')} Re-queue</button>` : ''}</td>
@@ -861,6 +925,7 @@ views.discarded = async function () {
       </tbody>
     </table></div></div>`;
 
+  sortable($('#dc-table'), 'discarded');
   $('#dc-back').addEventListener('click', () => navigate('review'));
 
   main.onclick = async e => {
@@ -991,7 +1056,7 @@ views.settings = async function () {
     email_user: $('#set-email-user').value,
     email_password: $('#set-email-pass').value,
     email_poll_minutes: Number($('#set-email-poll').value) || 15,
-  } });
+  } }).then(r => { refreshEmailHint(); return r; });
 
   // Auto-save: radios/checkboxes persist immediately, typing is debounced.
   let saveTimer, statusTimer;
@@ -1151,6 +1216,9 @@ async function uploadFiles(fileList) {
       files.slice(i, i + 20).forEach(f => fd.append('files', f));
       await api('/upload', { method: 'POST', body: fd });
       pollJobs();
+      // New items land in the review queue — take the user there so they can
+      // watch the triage finish and act on it without hunting for the tab.
+      if (currentView !== 'review') navigate('review');
     }
   } catch (err) {
     toast('Upload failed: ' + err.message);
@@ -1245,3 +1313,4 @@ api('/update-check').then(u => {
 const initial = location.hash.replace('#/', '') || 'dashboard';
 navigate(views[initial] ? initial : 'dashboard');
 pollJobs();
+refreshEmailHint();

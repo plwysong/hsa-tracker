@@ -95,6 +95,14 @@ button { font: inherit; cursor: pointer; }
 }
 .sidebar .spacer { flex: 1; }
 .sidebar .foot { font-size: 11px; color: var(--muted); padding: 8px 10px; }
+.side-email {
+  display: block; width: 100%; text-align: left; margin: 0 0 6px;
+  padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: none; color: var(--ink-2);
+}
+.side-email:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.side-email .se-label { font-size: 11px; color: var(--muted); }
+.side-email .se-addr { font-size: 12px; font-weight: 600; word-break: break-all; margin: 2px 0; }
+.side-email .se-copy { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
 
 /* ---------- Main ---------- */
 .main { flex: 1; padding: 26px 32px 60px; max-width: 1200px; min-width: 0; }
@@ -215,6 +223,10 @@ table.data th {
   color: var(--muted); font-weight: 650; padding: 10px 12px;
   border-bottom: 1px solid var(--border); white-space: nowrap;
 }
+table.data th.sortable { cursor: pointer; user-select: none; }
+table.data th.sortable:hover { color: var(--ink-2); }
+table.data th.sort-asc::after { content: ' \2191'; }
+table.data th.sort-desc::after { content: ' \2193'; }
 table.data td { padding: 10px 12px; border-bottom: 1px solid var(--grid); vertical-align: top; }
 table.data tr:last-child td { border-bottom: none; }
 table.data tr:hover td { background: color-mix(in srgb, var(--ink) 2.5%, transparent); }
@@ -308,6 +320,7 @@ tfoot td { font-weight: 700; border-top: 1px solid var(--baseline); }
 .empty .big { font-size: 34px; margin-bottom: 8px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .muted { color: var(--muted); }
+.muted.small { font-size: 12px; margin-top: 2px; }
 .good-text { color: var(--good-text); }
 .section-gap { margin-top: 22px; }
 .toast {
