@@ -26,7 +26,7 @@ The app checks the releases page each time it opens and shows an **Update availa
 ## Features
 
 - **Dashboard** — tax-free withdrawal balance, totals by category and year, recent activity.
-- **Drag & drop ingestion** — drop PDF/JPG/PNG/HEIC receipts anywhere in the app. Text is extracted (with OCR fallback for photos), split into line items, and AI-triaged.
+- **Drag & drop ingestion** — drop PDF, photo (JPG/PNG/HEIC/TIFF/GIF/WebP), HTML, or saved-email (.eml) receipts anywhere in the app. Text is extracted (with OCR fallback for photos), split into line items, and AI-triaged.
 - **AI eligibility triage** — each line item gets a verdict, a confidence level, and a plain-English rationale that becomes part of the permanent record. Clearly ineligible items (groceries, electronics…) go to a Discarded log instead of cluttering the queue — never silently deleted, and re-queueable.
 - **Review queue** — approve / edit-then-approve / reject, individually, per-receipt, or in bulk. Supplements default to *Low confidence, needs a Letter of Medical Necessity* rather than being decided for you.
 - **Ledger** — searchable, filterable permanent record. Mark entries reimbursed when you eventually withdraw. Every row links to its source receipt.

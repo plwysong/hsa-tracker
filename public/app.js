@@ -836,7 +836,7 @@ views.receipts = async function () {
     </div>
 
     <div class="dropzone" id="rc-dropzone">
-      <strong>Drag &amp; drop receipts here</strong> (or anywhere in the app) — PDF, JPG, PNG, HEIC<br>
+      <strong>Drag &amp; drop receipts here</strong> (or anywhere in the app) — PDF, JPG, PNG, HEIC, TIFF<br>
       <span class="muted">Each file is text-extracted, split into line items, and AI-triaged into the review queue.</span>
     </div>
 
@@ -857,6 +857,7 @@ views.receipts = async function () {
             <button class="btn small ghost" data-act="text" data-id="${r.id}">Extracted text</button>
             <button class="btn small ghost" data-act="add-expense" data-id="${r.id}" title="Add an expense with this receipt attached as its evidence">${icon('plus')} Add expense</button>
             <button class="btn small ghost" data-act="retriage" data-id="${r.id}" title="Re-run AI triage on this receipt's extracted text">${icon('refresh')} Re-triage</button>
+            <button class="btn small ghost danger" data-act="delete" data-id="${r.id}" data-name="${esc(r.original_name || r.filename)}" data-approved="${r.approved_count}" data-other="${r.expense_count - r.approved_count}" data-discarded="${r.discarded_count}" title="Permanently delete this receipt and everything from it">${icon('x')} Delete…</button>
           </td>
         </tr>`).join('') || '<tr><td colspan="6" class="empty">No receipts yet — drop one above.</td></tr>'}
       </tbody>
@@ -874,6 +875,34 @@ views.receipts = async function () {
     const btn = e.target.closest('button');
     if (!btn) return;
     if (btn.dataset.act === 'open') window.open(`/api/receipts/${btn.dataset.id}/file`, '_blank');
+    if (btn.dataset.act === 'delete') {
+      const { id, name } = btn.dataset;
+      const approved = Number(btn.dataset.approved), other = Number(btn.dataset.other), discarded = Number(btn.dataset.discarded);
+      const n = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
+      const parts = [];
+      if (approved) parts.push(`<strong>${n(approved, 'approved expense')}</strong> from your ledger`);
+      if (other) parts.push(n(other, 'item') + ' awaiting review or rejected');
+      if (discarded) parts.push(n(discarded, 'discarded item'));
+      openModal(`
+        <h3>Delete this receipt forever?</h3>
+        <p style="font-size:13px;color:var(--ink-2)"><strong>${esc(name)}</strong> and its extracted text will be removed permanently${parts.length ? ', along with ' + parts.join(', ') : ''}.
+        ${approved ? '<br><br>Those approved expenses are the evidence behind past withdrawals — only delete them if this receipt was added by mistake.' : ''}
+        ${approved || other ? '<br><br>If you are declining these as not eligible, use <strong>Reject</strong> in the Review queue instead — that keeps them for your audit trail.' : ''}
+        <br><br>The same file can be uploaded again afterwards.</p>
+        <div class="m-actions">
+          <button class="btn" data-close>Cancel</button>
+          <button class="btn" id="m-rc-del-ok" style="background:var(--critical);border-color:var(--critical);color:#fff">Delete forever</button>
+        </div>`);
+      $('#m-rc-del-ok').addEventListener('click', async () => {
+        closeModal();
+        try {
+          await api(`/receipts/${id}`, { method: 'DELETE' });
+          toast('Receipt deleted');
+          refreshBadge();
+          views.receipts();
+        } catch (err) { toast(err.message); }
+      });
+    }
     if (btn.dataset.act === 'add-expense') {
       const receiptId = Number(btn.dataset.id);
       editExpenseModal(null, settings, async body => {

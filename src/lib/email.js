@@ -5,7 +5,7 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { db, getSetting, audit } from '../db.js';
 import { ingestDocument } from './ingest.js';
-import { isSupported } from './extract.js';
+import { isSupported, htmlToText } from './extract.js';
 
 let pollTimer = null;
 let lastCheck = { at: null, result: null, error: null };
@@ -80,7 +80,7 @@ export async function checkEmailNow() {
         // No usable attachments → ingest the message body itself (order confirmations
         // like Amazon put line items in the HTML body).
         if (!ingested) {
-          const body = parsed.text || parsed.html?.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s{2,}/g, ' ') || '';
+          const body = parsed.text || htmlToText(parsed.html);
           if (body.trim().length > 40) {
             ingestDocument(Buffer.from(`Email from: ${parsed.from?.text}\nSubject: ${parsed.subject}\nDate: ${parsed.date}\n\n${body}`, 'utf8'), {
               originalName: `${(parsed.subject || 'email').slice(0, 80)}.txt`,
@@ -100,7 +100,7 @@ export async function checkEmailNow() {
           // The app couldn't turn this message into a receipt. Record it visibly instead
           // of silently dropping it — the email itself stays in the inbox for you to handle.
           const reason = (parsed.attachments || []).length
-            ? 'Had attachments, but none were a supported type (PDF, JPG, PNG, HEIC).'
+            ? 'Had attachments, but none were a supported type (PDF, JPG, PNG, HEIC, TIFF, GIF).'
             : 'No attachment, and no readable text in the message body.';
           db.prepare('INSERT INTO skipped_emails (message_id, from_addr, subject, reason, email_date) VALUES (?, ?, ?, ?, ?)')
             .run(messageId, parsed.from?.text || '', parsed.subject || '', reason, parsed.date?.toISOString() || '');

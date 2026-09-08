@@ -2,12 +2,23 @@
 // HEIC → JPEG conversion so phone photos work.
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
-const IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'image/heic', 'image/heif']);
+const IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/bmp', 'image/tiff', 'image/gif', 'image/heic', 'image/heif']);
+const IMAGE_EXTS = ['jpg', 'jpeg', 'jfif', 'png', 'webp', 'bmp', 'tif', 'tiff', 'gif'];
 
 export function isSupported(mime, filename = '') {
   const ext = filename.toLowerCase().split('.').pop();
   return mime === 'application/pdf' || IMAGE_MIMES.has(mime) ||
-    ['pdf', 'jpg', 'jpeg', 'png', 'webp', 'bmp', 'heic', 'heif', 'txt', 'csv', 'eml', 'html'].includes(ext);
+    [...IMAGE_EXTS, 'pdf', 'heic', 'heif', 'txt', 'csv', 'eml', 'html', 'htm'].includes(ext);
+}
+
+/** Readable text from an HTML document or email body: styles/scripts dropped, tags collapsed. */
+export function htmlToText(html) {
+  return String(html || '')
+    .replace(/<(style|script)[\s\S]*?<\/\1>/gi, '')
+    .replace(/<br\s*\/?>|<\/(p|div|tr|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/[ \t]{2,}/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
 }
 
 export async function extractPdfText(buffer) {
@@ -134,11 +145,33 @@ export async function extractText(buffer, mime, filename = '') {
     mime = 'image/jpeg';
   }
 
-  if (IMAGE_MIMES.has(mime) || ['jpg', 'jpeg', 'png', 'webp', 'bmp'].includes(ext)) {
+  if (IMAGE_MIMES.has(mime) || IMAGE_EXTS.includes(ext)) {
     const text = await ocrImage(buffer);
     return { text, method: 'ocr' };
   }
 
-  // Plain text / html / eml fallback
+  // A saved email: same treatment as one the poller fetches — headers, the body
+  // as text, and the contents of any supported attachment read out in turn.
+  if (mime === 'message/rfc822' || ext === 'eml') {
+    const { simpleParser } = await import('mailparser');
+    const parsed = await simpleParser(buffer);
+    const parts = [`Email from: ${parsed.from?.text || ''}\nSubject: ${parsed.subject || ''}\nDate: ${parsed.date || ''}`];
+    const body = parsed.text || htmlToText(parsed.html);
+    if (body?.trim()) parts.push(body.trim());
+    for (const att of parsed.attachments || []) {
+      if (!isSupported(att.contentType, att.filename || '')) continue;
+      try {
+        const inner = await extractText(att.content, att.contentType, att.filename || '');
+        if (inner.text?.trim()) parts.push(`--- Attachment: ${att.filename || att.contentType} ---\n${inner.text.trim()}`);
+      } catch { /* one unreadable attachment shouldn't sink the email */ }
+    }
+    return { text: parts.join('\n\n'), method: 'eml' };
+  }
+
+  if (mime === 'text/html' || ext === 'html' || ext === 'htm') {
+    return { text: htmlToText(buffer.toString('utf8')), method: 'html' };
+  }
+
+  // Plain text / csv fallback
   return { text: buffer.toString('utf8'), method: 'plain' };
 }

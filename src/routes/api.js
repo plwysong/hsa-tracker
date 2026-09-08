@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, unlinkSync } from 'node:fs';
 import { db, RECEIPTS_DIR, getSetting, setSetting, audit } from '../db.js';
 import { ingestDocument, retriageReceipt, listJobs, clearFinishedJobs } from '../lib/ingest.js';
 import { isSupported } from '../lib/extract.js';
@@ -264,6 +264,7 @@ api.get('/receipts', wrap((req, res) => {
     SELECT r.id, r.filename, r.original_name, r.mime, r.source, r.received_at, r.meta,
       (length(trim(r.raw_text)) >= 10) AS has_text,
       (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id) AS expense_count,
+      (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id AND e.status = 'approved') AS approved_count,
       (SELECT COUNT(*) FROM discarded d WHERE d.receipt_id = r.id) AS discarded_count
     FROM receipts r ORDER BY r.received_at DESC, r.id DESC
   `).all();
@@ -283,6 +284,38 @@ api.get('/receipts/:id/file', wrap((req, res) => {
 
 api.post('/receipts/:id/retriage', wrap((req, res) => {
   res.json(retriageReceipt(Number(req.params.id)));
+}));
+
+// Permanent removal of a receipt and everything derived from it. Reject keeps
+// data for the audit trail; this is the one path that truly drops it, so the UI
+// confirms with exact counts first. The file's hash record goes too, so the same
+// document can be uploaded again later on purpose (an emailed receipt's message
+// id is kept, or the poller would bring it straight back).
+api.delete('/receipts/:id', wrap((req, res) => {
+  const r = db.prepare('SELECT * FROM receipts WHERE id = ?').get(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Receipt not found' });
+  const counts = db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM expenses WHERE receipt_id = ? AND status = 'approved') AS approved,
+      (SELECT COUNT(*) FROM expenses WHERE receipt_id = ? AND status != 'approved') AS other,
+      (SELECT COUNT(*) FROM discarded WHERE receipt_id = ?) AS discarded`).get(r.id, r.id, r.id);
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM expenses WHERE receipt_id = ?').run(r.id);
+    db.prepare('DELETE FROM discarded WHERE receipt_id = ?').run(r.id);
+    db.prepare('DELETE FROM receipts WHERE id = ?').run(r.id);
+    if (r.sha256) db.prepare("DELETE FROM processed_sources WHERE kind = 'file_sha256' AND ref = ?").run(r.sha256);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  if (r.filename) {
+    const p = path.join(RECEIPTS_DIR, r.filename);
+    if (existsSync(p)) unlinkSync(p);
+  }
+  audit('receipt_delete', { id: r.id, file: r.original_name || r.filename, source: r.source, ...counts });
+  res.json({ ok: true, ...counts });
 }));
 
 api.get('/receipts/:id/text', wrap((req, res) => {
