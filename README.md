@@ -90,6 +90,6 @@ To publish a new version: bump `version` in package.json, `npm run installer`, t
 - `src/routes/api.js` — the REST API.
 - `public/` — no-build vanilla JS SPA; hand-rolled SVG charts.
 
-### Ideas for future phases
+### Roadmap
 
-Bank/card transaction import, review-queue reminder notifications, partial reimbursement tracking, multi-year tax packets per HSA administrator, multi-user profiles.
+See [ROADMAP.md](ROADMAP.md) for what a great HSA app needs, how this one compares to the market, and the phased plan to get there.
