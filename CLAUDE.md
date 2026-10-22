@@ -24,6 +24,7 @@ Deploy command (used in step 5):
 
 ## Hard-won gotchas
 
+- **The installer must never carry private or dev files.** The build's `files` list in package.json excludes CLAUDE*.md, ROADMAP.md, .claude/, data/ and the seed file, and `scripts/make-installer.sh` refuses to build if any of them end up inside the app. (Through v1.6.0's first upload, CLAUDE.local.md shipped inside the DMG; those assets were replaced/removed.)
 - **Never use electron-builder's dmg target** — it corrupts the ad-hoc signature. `scripts/make-installer.sh` (used by `npm run installer`) builds the DMG with hdiutil instead.
 - **Packaged app data** lives at `~/Library/Application Support/HSA Tracker/data/` (explicit `HSA_DATA_DIR` set in electron.js — don't trust Electron's userData naming). Folder-mode data lives in `./data/` (gitignored). **Updates must never touch user data.**
 - `node:sqlite` prints an ExperimentalWarning on start — normal, ignore.

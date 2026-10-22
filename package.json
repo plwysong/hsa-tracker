@@ -27,6 +27,10 @@
       "!scripts/**",
       "!Setup HSA Tracker.command",
       "!README.md",
+      "!CLAUDE.md",
+      "!CLAUDE.local.md",
+      "!ROADMAP.md",
+      "!.claude/**",
       "!src/seed-data.json"
     ],
     "mac": {

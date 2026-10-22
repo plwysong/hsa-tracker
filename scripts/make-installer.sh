@@ -7,6 +7,17 @@ cd "$(dirname "$0")/.."
 echo "→ Packaging app…"
 npx electron-builder --mac dir
 
+# Privacy guard: the installer is shared, so nothing private or dev-only may ride
+# along. (CLAUDE.local.md once did — see the build "files" exclusions in package.json.)
+APP_DIR="dist/mac-arm64/HSA Tracker.app/Contents/Resources/app"
+LEAKS=$(find "$APP_DIR" -maxdepth 2 \( -name 'CLAUDE*.md' -o -name 'ROADMAP.md' -o -name '.claude' \
+  -o -name 'data' -o -name '*.db' -o -name '*.db-wal' -o -name 'seed-data.json' \) -not -path '*/node_modules/*')
+if [ -n "$LEAKS" ]; then
+  echo "✗ Refusing to build: private or dev-only files are inside the app:" >&2
+  echo "$LEAKS" >&2
+  exit 1
+fi
+
 echo "→ Signing (ad-hoc)…"
 codesign --force --deep --sign - "dist/mac-arm64/HSA Tracker.app"
 codesign --verify --deep --strict "dist/mac-arm64/HSA Tracker.app"
