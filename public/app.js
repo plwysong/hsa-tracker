@@ -7,6 +7,8 @@ const main = $('#main');
 
 const money = n => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Today in the computer's own time zone (toISOString() is UTC — already tomorrow on a US evening).
+const localToday = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const fmtDate = d => {
   if (!d) return '—';
   const [y, m, day] = String(d).slice(0, 10).split('-');
@@ -79,20 +81,126 @@ async function api(path, opts = {}) {
     opts.body = JSON.stringify(opts.body);
     opts.headers = { 'Content-Type': 'application/json', ...opts.headers };
   }
-  const res = await fetch('/api' + path, opts);
+  let res;
+  try { res = await fetch('/api' + path, opts); }
+  catch { throw new Error("Couldn't reach HSA Tracker — it may have closed itself. Reopen it and try again."); }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+  if (!res.ok) throw Object.assign(new Error(data.error || `${res.status} ${res.statusText}`), { data });
   return data;
 }
 
+// ---------------- HSA establishment date ----------------
+// Expenses from before the HSA existed can't be reimbursed tax-free. Approved
+// ones are kept as records that don't count toward withdrawals, unless the user
+// marks one as counting (e.g. money moved over from an earlier HSA).
+const beforeEstablished = (e, settings) => !!settings?.hsa_established && String(e.date).slice(0, 10) < settings.hsa_established;
+const isRecordOnly = (e, settings) => beforeEstablished(e, settings) && e.status === 'approved' && !e.pre_hsa_override;
+function preHsaChip(e, settings) {
+  if (!beforeEstablished(e, settings)) return '';
+  const since = `Dated before your HSA was established (${fmtDate(settings.hsa_established)}).`;
+  if (e.status === 'approved' && e.pre_hsa_override) return `<span class="chip pre-hsa counted" title="${since} You marked it as counting toward withdrawals.">Before HSA · counted</span>`;
+  if (isRecordOnly(e, settings) && e.reimbursed) return `<span class="chip pre-hsa" title="${since} It was reimbursed from the HSA — worth reviewing with a tax preparer.">Reimbursed before HSA opened</span>`;
+  if (isRecordOnly(e, settings)) return `<span class="chip pre-hsa record" title="${since} Kept as a record; it doesn't count toward withdrawals.">Before HSA · record only</span>`;
+  return `<span class="chip pre-hsa" title="${since} The IRS only counts expenses from after that date.">Before HSA opened</span>`;
+}
+
+function askPreHsa(data) {
+  return new Promise(resolve => {
+    openModal(`
+      <h3>Dated before your HSA opened</h3>
+      <p style="font-size:13.5px;line-height:1.5;margin:0 0 10px">${esc(data.error.replace(/ \(\d{4}-\d{2}-\d{2}\)\.$/, ` (${fmtDate(data.established)}).`))}</p>
+      <p style="font-size:13px;color:var(--ink-2);line-height:1.5;margin:0 0 4px">The IRS only allows tax-free reimbursement of expenses incurred <strong>after</strong> your HSA was established. You can still keep the receipt: <strong>Keep as record</strong> saves it in your ledger without counting it toward what you can withdraw. Choose <strong>It qualifies</strong> only if the date that applies is earlier — for example, the money came over from an earlier HSA. If the date itself is wrong, cancel and edit it.</p>
+      <div class="m-actions">
+        <button class="btn" data-close>Cancel</button>
+        <button class="btn" id="m-pre-count">It qualifies — count it</button>
+        <button class="btn primary" id="m-pre-record">Keep as record</button>
+      </div>`);
+    const pick = c => () => { resolve(c); closeModal(); };
+    $('#m-pre-record').addEventListener('click', pick('record'));
+    $('#m-pre-count').addEventListener('click', pick('count'));
+    onModalClose = () => resolve(false);
+  });
+}
+
+const dupLine = d => `${fmtDate(d.date)} · ${esc(d.provider || '—')} — ${esc(d.description)} · ${money(d.amount)} <span class="chip status-${d.status}">${d.status.replace('_', ' ')}</span>`;
+
+/** Resolves 'approve' (not a duplicate), 'reject' (only offered when canReject), or false. */
+function askDuplicate(data, canReject) {
+  return new Promise(resolve => {
+    openModal(`
+      <h3>Possible duplicate</h3>
+      <p style="font-size:13.5px;line-height:1.5;margin:0 0 8px">${esc(data.error)}</p>
+      <div class="dup-list">${data.matches.map(d => `<div>${dupLine(d)}</div>`).join('')}</div>
+      <p style="font-size:13px;color:var(--ink-2);line-height:1.5;margin:10px 0 4px">If it's the same purchase, approving it would count it twice. Two separate purchases are fine — for example, two boxes bought on separate receipts. <strong>Not a duplicate</strong> approves it and won't ask about ${data.matches.length === 1 ? 'this pair' : 'these'} again.</p>
+      <div class="m-actions">
+        <button class="btn" data-close>Cancel</button>
+        ${canReject ? '<button class="btn danger" id="m-dup-reject">Reject this one</button>' : ''}
+        <button class="btn primary" id="m-dup-ok">Not a duplicate — approve</button>
+      </div>`);
+    const pick = c => () => { resolve(c); closeModal(); };
+    $('#m-dup-ok').addEventListener('click', pick('approve'));
+    $('#m-dup-reject')?.addEventListener('click', pick('reject'));
+    onModalClose = () => resolve(false);
+  });
+}
+
+/**
+ * Runs send(opts) and answers the server's approval questions as they come:
+ * a date before the HSA (keep as record or count it) and a possible duplicate
+ * (not a duplicate, or reject this one). Resolves to the pre-HSA choice used
+ * ('record' | 'count' | null when it didn't apply), or false if the user
+ * cancelled or rejected instead.
+ */
+async function approveGuarded(send, { rejectId } = {}) {
+  const opts = {};
+  for (;;) {
+    try { await send(opts); return opts.pre_hsa ?? null; }
+    catch (err) {
+      const code = err.data?.code;
+      if (code === 'before_established') {
+        const c = await askPreHsa(err.data);
+        if (!c) return false;
+        opts.pre_hsa = c;
+      } else if (code === 'possible_duplicate') {
+        const c = await askDuplicate(err.data, rejectId != null);
+        if (!c) return false;
+        if (c === 'reject') {
+          await api(`/expenses/${rejectId}/reject`, { method: 'POST' });
+          toast('Rejected (kept in records)');
+          return false;
+        }
+        opts.not_duplicate = true;
+      } else throw err;
+    }
+  }
+}
+const dupChip = e => e.duplicates?.length
+  ? `<span class="chip dup" title="Same date, amount and provider as: ${esc(e.duplicates.map(d => `${d.description} (${d.status.replace('_', ' ')})`).join('; '))}">Possible duplicate</span>` : '';
+const approvedToast = (choice, base = 'Approved') => choice === 'record' ? `${base} — kept as a record, not counted` : base;
+
 let toastTimer;
-function toast(msg) {
+function toast(msg, ms = 2600) {
   const t = $('#toast');
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
+const toastError = err => toast(err?.message || String(err), 7000);
+
+// Delegated click handlers run through this: the clicked button is disabled while
+// its request runs (so a double-click can't fire twice), and a failure shows a
+// message instead of silently doing nothing.
+const actionHandler = fn => async ev => {
+  const btn = ev.target.closest('button');
+  if (btn?.disabled) return;
+  if (btn) btn.disabled = true;
+  try { await fn(ev); }
+  catch (err) { toastError(err); }
+  finally { if (btn) btn.disabled = false; }
+};
+// Safety net for any other async action that fails.
+window.addEventListener('unhandledrejection', e => toastError(e.reason));
 
 // ---------------- Router ----------------
 const views = {};
@@ -244,6 +352,7 @@ views.dashboard = async function () {
         <div class="label">Available for tax-free withdrawal</div>
         <div class="value">${money(s.unreimbursed_total)}</div>
         <div class="hint">approved &amp; not yet reimbursed</div>
+        ${s.record_only_count ? `<div class="hint pre-hsa-hint"><a href="#/ledger" id="dash-prehsa">${s.record_only_count} receipt${s.record_only_count === 1 ? '' : 's'} (${money(s.record_only_total)})</a> from before your HSA ${s.record_only_count === 1 ? 'is' : 'are'} kept as records, not counted${s.record_only_reimbursed_count ? ` — <strong>${s.record_only_reimbursed_count} already reimbursed</strong>` : ''}</div>` : ''}
       </div>
       <div class="card kpi">
         <div class="label">Total eligible logged</div>
@@ -292,6 +401,11 @@ views.dashboard = async function () {
   $('#dash-upload')?.addEventListener('click', () => $('#file-input').click());
   $('#dash-review')?.addEventListener('click', () => navigate('review'));
   $('#dash-ledger')?.addEventListener('click', () => navigate('ledger'));
+  $('#dash-prehsa')?.addEventListener('click', ev => {
+    ev.preventDefault();
+    Object.assign(ledgerFilters, { status: 'approved', pre_hsa: '1' });
+    navigate('ledger');
+  });
 };
 
 // ---------------- Review queue ----------------
@@ -348,7 +462,7 @@ views.review = async function () {
     </div>` : ''}
 
     ${items.length === 0 ? `<div class="card"><div class="empty"><div class="big">${icon('check', 34)}</div>Queue is clear.<br>${settings.email_enabled ? 'Upload a receipt or wait for the next email check.' : 'Upload a receipt to get started.'}</div></div>` : ''}
-    ${[...groups.entries()].map(([key, list]) => renderGroup(key, list)).join('')}
+    ${[...groups.entries()].map(([key, list]) => renderGroup(key, list, settings)).join('')}
 
     ${discardedCount ? `<p class="inline-note section-gap">${discardedCount} item${discardedCount === 1 ? ' was' : 's were'} auto-discarded as clearly not eligible — <a href="#/discarded">view them</a>. Nothing is ever deleted.</p>` : ''}
 
@@ -384,11 +498,15 @@ views.review = async function () {
     }
   };
 
-  main.onclick = async e => {
+  main.onclick = actionHandler(async e => {
     const btn = e.target.closest('button');
     if (!btn) return;
     const id = Number(btn.dataset.id);
-    if (btn.dataset.act === 'approve') { await api(`/expenses/${id}/approve`, { method: 'POST' }); toast('Approved'); views.review(); }
+    if (btn.dataset.act === 'approve') {
+      const c = await approveGuarded(o => api(`/expenses/${id}/approve`, { method: 'POST', body: o }), { rejectId: id });
+      if (c !== false) toast(approvedToast(c));
+      views.review();
+    }
     if (btn.dataset.act === 'reject') { await api(`/expenses/${id}/reject`, { method: 'POST' }); toast('Rejected (kept in records)'); views.review(); }
     if (btn.dataset.act === 'edit') {
       const item = items.find(x => x.id === id);
@@ -398,21 +516,22 @@ views.review = async function () {
         views.review();
       }, { showApprove: true, onApprove: async patch => {
         await api(`/expenses/${id}`, { method: 'PATCH', body: patch });
-        await api(`/expenses/${id}/approve`, { method: 'POST' });
-        toast('Saved & approved');
+        const c = await approveGuarded(o => api(`/expenses/${id}/approve`, { method: 'POST', body: o }), { rejectId: id });
+        toast(c === false ? 'Saved' : approvedToast(c, 'Saved & approved'));
         views.review();
       } });
     }
     if (btn.dataset.act === 'view-receipt') window.open(`/api/receipts/${btn.dataset.rid}/file`, '_blank');
     if (btn.dataset.groupAct) {
       const ids = JSON.parse(btn.dataset.ids);
-      await api('/expenses/bulk', { method: 'POST', body: { ids, action: btn.dataset.groupAct } });
-      toast(`${ids.length} item${ids.length === 1 ? '' : 's'} ${btn.dataset.groupAct}${btn.dataset.groupAct === 'approve' ? 'd' : 'ed'}`);
+      const c = await approveGuarded(o => api('/expenses/bulk', { method: 'POST', body: { ids, action: btn.dataset.groupAct, ...o } }));
+      if (c !== false) toast(`${ids.length} item${ids.length === 1 ? '' : 's'} ${btn.dataset.groupAct}${btn.dataset.groupAct === 'approve' ? 'd' : 'ed'}`);
       views.review();
     }
     if (btn.dataset.bulk) {
       const ids = [...selected];
-      await api('/expenses/bulk', { method: 'POST', body: { ids, action: btn.dataset.bulk } });
+      const c = await approveGuarded(o => api('/expenses/bulk', { method: 'POST', body: { ids, action: btn.dataset.bulk, ...o } }));
+      if (c === false) return;
       toast(`${ids.length} item${ids.length === 1 ? '' : 's'} ${btn.dataset.bulk}${btn.dataset.bulk === 'approve' ? 'd' : 'ed'}`);
       selected.clear();
       views.review();
@@ -422,7 +541,7 @@ views.review = async function () {
       $$('.item input[type="checkbox"]').forEach(b => b.checked = false);
       updateBulkbar(items);
     }
-  };
+  });
 
   function updateBulkbar(items) {
     const bar = $('#bulkbar');
@@ -435,7 +554,7 @@ views.review = async function () {
   }
 };
 
-function renderGroup(key, list) {
+function renderGroup(key, list, settings) {
   const first = list[0];
   const sum = list.reduce((s, e) => s + e.amount, 0);
   const ids = JSON.stringify(list.map(e => e.id));
@@ -460,12 +579,14 @@ function renderGroup(key, list) {
           <div class="desc">${esc(e.description)}</div>
           <div class="meta">
             <span>${fmtDate(e.date)}</span>·<span>${esc(e.provider)}</span>
+            ${preHsaChip(e, settings)}${dupChip(e)}
             <span class="chip cat">${esc(e.category)}</span>
             <span class="chip conf-${esc(e.confidence)}">${esc(e.confidence)} confidence</span>
             <span class="chip src">${esc(e.source_type)}</span>
             ${e.order_ref ? `<span class="muted mono">${esc(e.order_ref)}</span>` : ''}
           </div>
           <div class="rationale">${esc(e.rationale)}</div>
+          ${e.duplicates?.length ? `<div class="dup-note">Possible duplicate of: ${e.duplicates.map(dupLine).join('; ')}</div>` : ''}
         </div>
         <div style="text-align:right">
           <div class="amount">${money(e.amount)}</div>
@@ -504,7 +625,7 @@ function closePane() {
 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closePane(); });
 
-function expensePaneHtml(e) {
+function expensePaneHtml(e, settings) {
   return `
   <div class="drawer-head">
     <div>
@@ -515,7 +636,7 @@ function expensePaneHtml(e) {
   </div>
   <div class="drawer-body">
     <div class="drawer-meta">
-      <div><div class="m-label">Date of service</div><div class="m-value">${fmtDate(e.date)}</div></div>
+      <div><div class="m-label">Date of service</div><div class="m-value">${fmtDate(e.date)} ${preHsaChip(e, settings)}</div></div>
       <div><div class="m-label">Provider</div><div class="m-value">${esc(e.provider || '—')}</div></div>
       <div><div class="m-label">Category</div><div class="m-value"><span class="chip cat">${esc(e.category)}</span></div></div>
       <div><div class="m-label">Reimbursed</div><div class="m-value">${e.reimbursed ? `Yes — ${fmtDate(e.date_reimbursed)}` : 'No — available for withdrawal'}</div></div>
@@ -524,6 +645,17 @@ function expensePaneHtml(e) {
       ${e.order_ref ? `<div><div class="m-label">Order ref</div><div class="m-value mono">${esc(e.order_ref)}</div></div>` : ''}
       ${e.notes ? `<div><div class="m-label">Notes</div><div class="m-value">${esc(e.notes)}</div></div>` : ''}
     </div>
+    ${e.duplicates?.length ? `<div class="pre-hsa-note dup">
+      <strong>Possible duplicate.</strong> Same date, amount and provider as:
+      ${e.duplicates.map(d => `<div style="margin-top:4px"><a href="#" data-goto="${d.id}">${dupLine(d)}</a></div>`).join('')}
+      <div style="margin-top:6px">If it's the same purchase, reject one of them so it isn't counted twice.</div>
+      <div style="margin-top:8px"><button class="btn small" data-pane-act="not-dup">Not a duplicate</button></div></div>` : ''}
+    ${beforeEstablished(e, settings) ? `<div class="pre-hsa-note">${e.status !== 'approved'
+      ? `Dated before your HSA was established (${fmtDate(settings.hsa_established)}). The IRS only counts expenses from after that date — if you approve it, you'll choose whether to keep it as a record or count it.`
+      : e.pre_hsa_override
+        ? `Dated before your HSA was established (${fmtDate(settings.hsa_established)}), but you marked it as counting toward withdrawals. Keep a note of why it qualifies — for example, an earlier HSA's start date applies.`
+        : `Kept as a record. It's dated before your HSA was established (${fmtDate(settings.hsa_established)}), so it doesn't count toward what you can withdraw.${e.reimbursed ? ' <strong>It was reimbursed from your HSA</strong> — worth reviewing with a tax preparer.' : ''}`}
+      ${e.status === 'approved' ? `<div style="margin-top:8px"><button class="btn small" data-pane-act="pre-hsa">${e.pre_hsa_override ? 'Make it record only' : 'It qualifies — count it'}</button></div>` : ''}</div>` : ''}
     ${e.rationale ? `<div class="drawer-section-title">Why it's eligible</div><div class="drawer-rationale">${esc(e.rationale)}</div>` : ''}
     <div class="drawer-section-title">Receipt${e.receipt_original_name ? ` — ${esc(e.receipt_original_name)}` : ''}</div>
     ${e.receipt_id
@@ -552,8 +684,10 @@ function expensePaneHtml(e) {
 
 /** Opens the inspector for an expense. `refresh(idToKeepOpen)` re-renders the host view. */
 function openExpensePane(e, settings, refresh) {
-  openPane('expense:' + e.id, expensePaneHtml(e), pane => {
-    pane.onclick = async ev => {
+  openPane('expense:' + e.id, expensePaneHtml(e, settings), pane => {
+    pane.onclick = actionHandler(async ev => {
+      const go = ev.target.closest('[data-goto]');
+      if (go) { ev.preventDefault(); refresh(Number(go.dataset.goto)); return; }
       const btn = ev.target.closest('button');
       if (!btn) return;
       if (btn.id === 'pane-delete-cancel') { pane.querySelector('#pane-confirm').hidden = true; return; }
@@ -579,8 +713,22 @@ function openExpensePane(e, settings, refresh) {
           refresh(e.id);
         });
       }
-      if (act === 'approve') { await api(`/expenses/${e.id}/approve`, { method: 'POST' }); toast('Approved'); refresh(e.id); }
+      if (act === 'approve') {
+        const c = await approveGuarded(o => api(`/expenses/${e.id}/approve`, { method: 'POST', body: o }), { rejectId: e.id });
+        if (c !== false) toast(approvedToast(c));
+        refresh(e.id);
+      }
       if (act === 'reject') { await api(`/expenses/${e.id}/reject`, { method: 'POST' }); toast('Rejected (kept in records)'); refresh(e.id); }
+      if (act === 'not-dup') {
+        await api(`/expenses/${e.id}/not-duplicate`, { method: 'POST' });
+        toast("Marked not a duplicate — it won't ask again");
+        refresh(e.id);
+      }
+      if (act === 'pre-hsa') {
+        await api(`/expenses/${e.id}/pre-hsa`, { method: 'POST', body: { count: !e.pre_hsa_override } });
+        toast(e.pre_hsa_override ? 'Kept as a record — not counted' : 'Now counts toward withdrawals');
+        refresh(e.id);
+      }
       if (act === 'reopen') { await api(`/expenses/${e.id}/reopen`, { method: 'POST' }); toast('Moved back to review queue'); refresh(e.id); }
       if (act === 'toggle-reimb') {
         if (e.reimbursed) {
@@ -595,20 +743,21 @@ function openExpensePane(e, settings, refresh) {
           });
         }
       }
-    };
+    });
   });
 }
 
 // ---------------- Ledger ----------------
-const ledgerFilters = { q: '', category: '', year: '', status: 'approved', reimbursed: '' };
+const ledgerFilters = { q: '', category: '', year: '', status: 'approved', reimbursed: '', pre_hsa: '' };
 const ledgerSelected = new Set();
 
 views.ledger = async function () {
   main.innerHTML = '<div class="empty">Loading…</div>';
   const params = new URLSearchParams();
+  const settings = await api('/settings');
+  if (!settings.hsa_established) ledgerFilters.pre_hsa = '';
   for (const [k, v] of Object.entries(ledgerFilters)) if (v) params.set(k, v);
   const rows = await api('/expenses?' + params);
-  const settings = await api('/settings');
   const stats = await api('/stats');
   const years = [...new Set(stats.byYear.map(y => y.year))];
   const total = rows.reduce((s, e) => s + e.amount, 0);
@@ -645,6 +794,10 @@ views.ledger = async function () {
         <option value="no" ${ledgerFilters.reimbursed === 'no' ? 'selected' : ''}>Not reimbursed</option>
         <option value="yes" ${ledgerFilters.reimbursed === 'yes' ? 'selected' : ''}>Reimbursed</option>
       </select>
+      ${settings.hsa_established ? `<select id="lg-prehsa">
+        <option value="">Any date</option>
+        <option value="1" ${ledgerFilters.pre_hsa ? 'selected' : ''}>Before HSA opened</option>
+      </select>` : ''}
       <span class="count">${rows.length} rows · ${money(total)}</span>
     </div>
 
@@ -658,7 +811,7 @@ views.ledger = async function () {
         ${rows.map(e => `
         <tr class="row-click ${paneKey === 'expense:' + e.id ? 'row-selected' : ''}" data-id="${e.id}">
           <td><input type="checkbox" class="lg-check" data-id="${e.id}" ${ledgerSelected.has(e.id) ? 'checked' : ''}></td>
-          <td style="white-space:nowrap" data-v="${esc(e.date)}">${fmtDate(e.date)}</td>
+          <td style="white-space:nowrap" data-v="${esc(e.date)}">${fmtDate(e.date)}${beforeEstablished(e, settings) ? ` ${preHsaChip(e, settings)}` : ''}${e.duplicates?.length ? ` ${dupChip(e)}` : ''}</td>
           <td class="col-extra">${esc(e.provider)}</td>
           <td>${esc(e.description)}</td>
           <td class="col-extra"><span class="chip cat">${esc(e.category)}</span></td>
@@ -702,11 +855,12 @@ views.ledger = async function () {
   $('#lg-cat').addEventListener('change', e => { ledgerFilters.category = e.target.value; refresh(); });
   $('#lg-year').addEventListener('change', e => { ledgerFilters.year = e.target.value; refresh(); });
   $('#lg-reimb').addEventListener('change', e => { ledgerFilters.reimbursed = e.target.value; refresh(); });
+  $('#lg-prehsa')?.addEventListener('change', e => { ledgerFilters.pre_hsa = e.target.value; refresh(); });
   wireLedgerSwitch();
   $('#lg-add').addEventListener('click', () => {
     editExpenseModal(null, settings, async body => {
-      await api('/expenses', { method: 'POST', body });
-      toast('Expense added to ledger');
+      const c = await approveGuarded(o => api('/expenses', { method: 'POST', body: { ...body, ...o } }));
+      if (c !== false) toast(approvedToast(c, 'Expense added to ledger'));
       refresh();
     });
   });
@@ -964,7 +1118,7 @@ async function openReceiptPane(id, settings, refresh) {
     const menu = pane.querySelector('#rc-menu');
     const closeMenu = () => { menu.hidden = true; document.removeEventListener('click', onDoc, true); };
     const onDoc = ev => { if (!ev.target.closest('.menu-wrap')) closeMenu(); };
-    pane.onclick = async ev => {
+    pane.onclick = actionHandler(async ev => {
       const btn = ev.target.closest('button');
       if (!btn) return;
       if (btn.id === 'pane-delete-cancel') { pane.querySelector('#pane-confirm').hidden = true; return; }
@@ -990,8 +1144,9 @@ async function openReceiptPane(id, settings, refresh) {
       if (act === 'download') location.href = `/api/receipts/${id}/file?download=1`;
       if (act === 'add-expense') {
         editExpenseModal(null, settings, async body => {
-          await api('/expenses', { method: 'POST', body: { ...body, receipt_id: id } });
-          toast('Expense added to ledger with this receipt attached');
+          const c = await approveGuarded(o => api('/expenses', { method: 'POST', body: { ...body, receipt_id: id, ...o } }));
+          if (c === false) return;
+          toast(approvedToast(c, 'Expense added with this receipt attached'));
           refresh(id);
         });
       }
@@ -1018,7 +1173,7 @@ async function openReceiptPane(id, settings, refresh) {
         c.hidden = false;
         c.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }
-    };
+    });
   });
 }
 
@@ -1051,7 +1206,7 @@ views.discarded = async function () {
   sortable($('#dc-table'), 'discarded');
   $('#dc-back').addEventListener('click', () => navigate('review'));
 
-  main.onclick = async e => {
+  main.onclick = actionHandler(async e => {
     const btn = e.target.closest('button');
     if (!btn) return;
     if (btn.dataset.act === 'view-receipt') window.open(`/api/receipts/${btn.dataset.rid}/file`, '_blank');
@@ -1060,7 +1215,7 @@ views.discarded = async function () {
       toast('Moved to review queue');
       navigate('review');
     }
-  };
+  });
 };
 
 
@@ -1073,9 +1228,17 @@ views.settings = async function () {
   const emailStat = await api('/email/status');
 
   main.innerHTML = `
-    <div class="page-head"><div><h1>Settings</h1><div class="sub">AI engine, email ingestion, and backups. Changes save automatically.<span class="test-result ok" id="save-status"></span></div></div></div>
+    <div class="page-head"><div><h1>Settings</h1><div class="sub">Your HSA, AI engine, email ingestion, and backups. Changes save automatically.<span class="test-result ok" id="save-status"></span></div></div></div>
 
     <div class="settings-form">
+      <div class="card settings-section">
+        <h3>Your HSA</h3>
+        <div class="s-sub">Only expenses from on or after the day your HSA was established can be reimbursed. Anything dated earlier is flagged and needs a second confirmation to approve.</div>
+        <div class="field" style="max-width:220px"><label>Date your HSA was established</label><input type="date" id="set-hsa-established" value="${esc(s.hsa_established || '')}"></div>
+        <div id="pre-hsa-summary"></div>
+        <div class="inline-note" style="margin:0">Find it on your HSA provider's welcome email, first statement, or account details page. <strong>Moved money in from an earlier HSA?</strong> If it was a direct transfer or rollover and the old account never hit $0, use the <em>earlier</em> account's start date — older expenses may still qualify.</div>
+      </div>
+
       <div class="card settings-section">
         <h3>AI eligibility triage</h3>
         <div class="s-sub">How receipts are split into line items and judged for HSA eligibility.</div>
@@ -1160,6 +1323,25 @@ views.settings = async function () {
     </div>`}
 `;
 
+  // What the establishment date means for expenses already in the ledger — shown
+  // whenever a date is set, so changing it never silently changes the totals.
+  const showPreHsaSummary = async () => {
+    const el = $('#pre-hsa-summary');
+    if (!el) return;
+    const st = await api('/stats');
+    el.innerHTML = st.record_only_count ? `<div class="pre-hsa-note">
+      <strong>${st.record_only_count} approved expense${st.record_only_count === 1 ? '' : 's'} (${money(st.record_only_total)})</strong> ${st.record_only_count === 1 ? 'is' : 'are'} dated before this.
+      ${st.record_only_count === 1 ? 'It stays' : 'They stay'} in your ledger as records but no longer count toward what you can withdraw.
+      ${st.record_only_reimbursed_count ? `<strong>${st.record_only_reimbursed_count} ${st.record_only_reimbursed_count === 1 ? 'was' : 'were'} already reimbursed from your HSA</strong> — worth reviewing with a tax preparer.` : ''}
+      If one does qualify, open it in the Ledger and choose "It qualifies — count it".
+      <div style="margin-top:8px"><button class="btn small" id="pre-hsa-view">View them in the Ledger</button></div></div>` : '';
+    $('#pre-hsa-view')?.addEventListener('click', () => {
+      Object.assign(ledgerFilters, { status: 'approved', pre_hsa: '1' });
+      navigate('ledger');
+    });
+  };
+  showPreHsaSummary();
+
   $$('input[name="ai"]').forEach(r => r.addEventListener('change', () => {
     const v = document.querySelector('input[name="ai"]:checked').value;
     $$('.ai-fields').forEach(f => f.hidden = f.dataset.provider !== v);
@@ -1179,6 +1361,7 @@ views.settings = async function () {
     email_user: $('#set-email-user').value,
     email_password: $('#set-email-pass').value,
     email_poll_minutes: Number($('#set-email-poll').value) || 15,
+    hsa_established: $('#set-hsa-established').value,
   } }).then(r => { refreshEmailHint(); return r; });
 
   // Auto-save: radios/checkboxes persist immediately, typing is debounced.
@@ -1186,6 +1369,7 @@ views.settings = async function () {
   const autoSave = async () => {
     try {
       await saveSettings();
+      showPreHsaSummary();
       // Toast is visible wherever you are on the page; the header tick is a quiet
       // secondary cue when you're near the top. (The old header-only indicator was
       // off-screen when editing the email section at the bottom.)
@@ -1247,13 +1431,20 @@ views.settings = async function () {
 };
 
 // ---------------- Modals ----------------
+let onModalClose = null; // set by dialogs that await an answer, so dismissing still settles them
 function openModal(html) {
+  onModalClose = null;
   const back = $('#modal-backdrop');
   $('#modal').innerHTML = html;
   back.classList.add('show');
   $('#modal').querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeModal));
 }
-function closeModal() { $('#modal-backdrop').classList.remove('show'); }
+function closeModal() {
+  $('#modal-backdrop').classList.remove('show');
+  const f = onModalClose;
+  onModalClose = null;
+  f?.();
+}
 $('#modal-backdrop').addEventListener('click', e => { if (e.target.id === 'modal-backdrop') closeModal(); });
 
 function editExpenseModal(item, settings, onSave, { showApprove = false, onApprove } = {}) {
@@ -1261,7 +1452,7 @@ function editExpenseModal(item, settings, onSave, { showApprove = false, onAppro
   openModal(`
     <h3>${isNew ? 'Add expense' : 'Edit expense'}</h3>
     <div class="row2">
-      <div class="field"><label>Date <span class="req">*</span></label><input type="date" id="m-date" value="${esc(item?.date?.slice(0, 10) || new Date().toISOString().slice(0, 10))}"></div>
+      <div class="field"><label>Date <span class="req">*</span></label><input type="date" id="m-date" value="${esc(item?.date?.slice(0, 10) || localToday())}"></div>
       <div class="field"><label>Amount ($) <span class="req">*</span></label><input type="number" step="0.01" min="0" id="m-amount" placeholder="0.00" value="${item?.amount ?? ''}"></div>
     </div>
     <div class="field"><label>Provider</label><input id="m-provider" value="${esc(item?.provider || '')}"></div>
@@ -1315,7 +1506,7 @@ function reimburseModal(onConfirm) {
   openModal(`
     <h3>Mark reimbursed</h3>
     <div class="field"><label>Date reimbursed from HSA</label>
-      <input type="date" id="m-reimb-date" value="${new Date().toISOString().slice(0, 10)}"></div>
+      <input type="date" id="m-reimb-date" value="${localToday()}"></div>
     <div class="m-actions">
       <button class="btn" data-close>Cancel</button>
       <button class="btn primary" id="m-reimb-ok">Mark reimbursed</button>

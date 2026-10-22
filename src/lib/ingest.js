@@ -3,7 +3,7 @@
 // Runs async with an in-memory job tracker so the UI can show live progress.
 import { writeFileSync, readFileSync, unlinkSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { db, RECEIPTS_DIR, sha256File, audit } from '../db.js';
+import { db, RECEIPTS_DIR, sha256File, audit, localToday, cents } from '../db.js';
 import { extractText } from './extract.js';
 import { triageReceipt } from './triage.js';
 
@@ -153,14 +153,14 @@ function insertTriageResults(job, receiptId, triage, sourceType) {
     VALUES (?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?)
   `);
   const insDiscarded = db.prepare('INSERT INTO discarded (receipt_id, description, amount, reason) VALUES (?, ?, ?, ?)');
-  const docDate = triage.purchase_date || new Date().toISOString().slice(0, 10);
+  const docDate = triage.purchase_date || localToday();
   for (const item of triage.items) {
     if (item.verdict === 'not_eligible') {
       insDiscarded.run(receiptId, item.description, item.amount, item.rationale || 'Not HSA-eligible.');
       job.discarded++;
     } else {
       insExpense.run(item.date || docDate, triage.provider || 'Unknown', item.category || 'Other',
-        item.description, item.amount, triage.payment_method || null,
+        item.description, cents(item.amount), triage.payment_method || null,
         item.confidence || 'Low', item.rationale || '', sourceType, receiptId,
         triage.order_ref ? String(triage.order_ref) : null);
       job.queued++;
@@ -191,7 +191,7 @@ async function processJob(job, buffer, meta) {
   }
 
   // Store the original file durably
-  const stamp = new Date().toISOString().slice(0, 10);
+  const stamp = localToday();
   const filename = `${stamp} ${safeName(meta.originalName)}`.replace(/(\.[a-z0-9]+)?$/i, m => m || '');
   let finalName = filename;
   let n = 1;

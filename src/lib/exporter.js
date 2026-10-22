@@ -4,7 +4,7 @@ import archiver from 'archiver';
 import PDFDocument from 'pdfkit';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { db, RECEIPTS_DIR } from '../db.js';
+import { db, RECEIPTS_DIR, establishedDate, isRecordOnly, cents } from '../db.js';
 
 function allExpenses(status = null, ids = null) {
   const clauses = [];
@@ -47,11 +47,13 @@ function csvEscape(v) {
 export function ledgerCsv({ approvedOnly = true, ids = null } = {}) {
   const rows = allExpenses(approvedOnly ? 'approved' : null, ids);
   const header = ['Date', 'Provider', 'Category', 'Description', 'Amount', 'Payment Method', 'Status',
-    'Confidence', 'Eligibility Rationale', 'Reimbursed from HSA', 'Date Reimbursed', 'Source', 'Order/Receipt Ref', 'Receipt File', 'Notes'];
+    'Confidence', 'Eligibility Rationale', 'Counts Toward Withdrawals', 'Reimbursed from HSA', 'Date Reimbursed', 'Source', 'Order/Receipt Ref', 'Receipt File', 'Notes'];
   const lines = [header.join(',')];
+  const est = establishedDate();
   for (const e of rows) {
+    const counts = e.status !== 'approved' ? '' : isRecordOnly(e, est) ? 'No - dated before HSA established (record only)' : 'Yes';
     lines.push([e.date, e.provider, e.category, e.description, e.amount?.toFixed(2), e.payment_method,
-      e.status, e.confidence, e.rationale, e.reimbursed ? 'Yes' : 'No', e.date_reimbursed,
+      e.status, e.confidence, e.rationale, counts, e.reimbursed ? 'Yes' : 'No', e.date_reimbursed,
       e.source_type, e.order_ref, e.receipt_filename, e.notes].map(csvEscape).join(','));
   }
   return lines.join('\n');
@@ -84,6 +86,12 @@ export async function fullZip(res) {
   return archive;
 }
 
+// The PDF is read by people, so it uses the app's M/D/YYYY; CSV/JSON keep ISO for software.
+function usDate(d) {
+  const [y, m, day] = String(d || '').slice(0, 10).split('-');
+  return y && m && day ? `${Number(m)}/${Number(day)}/${y}` : String(d || '');
+}
+
 function money(n) {
   return '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -95,9 +103,15 @@ export function summaryPdfBuffer() {
   doc.on('data', c => chunks.push(c));
   const finished = new Promise(resolve => doc.on('end', () => resolve(Buffer.concat(chunks))));
 
-  const approved = allExpenses('approved');
-  const total = approved.reduce((s, e) => s + e.amount, 0);
-  const reimbursed = approved.filter(e => e.reimbursed).reduce((s, e) => s + e.amount, 0);
+  // Totals and the itemized ledger cover expenses that count toward withdrawals;
+  // records-only (dated before the HSA was established) get their own section.
+  const est = establishedDate();
+  const all = allExpenses('approved');
+  const approved = all.filter(e => !isRecordOnly(e, est));
+  const records = all.filter(e => isRecordOnly(e, est));
+  const sum = list => cents(list.reduce((s, e) => s + e.amount, 0));
+  const total = sum(approved);
+  const reimbursed = sum(approved.filter(e => e.reimbursed));
 
   doc.fontSize(18).font('Helvetica-Bold').text('HSA Eligible Expense Summary');
   doc.moveDown(0.3);
@@ -108,7 +122,11 @@ export function summaryPdfBuffer() {
   doc.fillColor('#000').fontSize(12).font('Helvetica-Bold');
   doc.text(`Total eligible expenses logged: ${money(total)}`);
   doc.text(`Reimbursed from HSA to date: ${money(reimbursed)}`);
-  doc.text(`Available for future tax-free withdrawal: ${money(total - reimbursed)}`);
+  doc.text(`Available for future tax-free withdrawal: ${money(cents(total - reimbursed))}`);
+  if (est) {
+    doc.fontSize(10).font('Helvetica').fillColor('#555').text(`HSA established ${usDate(est)}. Expenses dated earlier are not counted above${records.length ? ' — see "Kept as records" at the end' : ''}.`);
+    doc.fillColor('#000');
+  }
   doc.moveDown(1);
 
   // By category / by year
@@ -120,11 +138,11 @@ export function summaryPdfBuffer() {
   }
   doc.fontSize(11).font('Helvetica-Bold').text('By category:', { continued: false });
   doc.font('Helvetica').fontSize(10);
-  for (const [c, v] of Object.entries(byCat).sort((a, b) => b[1] - a[1])) doc.text(`   ${c}: ${money(v)}`);
+  for (const [c, v] of Object.entries(byCat).sort((a, b) => b[1] - a[1])) doc.text(`   ${c}: ${money(cents(v))}`);
   doc.moveDown(0.5);
   doc.fontSize(11).font('Helvetica-Bold').text('By year:');
   doc.font('Helvetica').fontSize(10);
-  for (const [y, v] of Object.entries(byYear).sort()) doc.text(`   ${y}: ${money(v)}`);
+  for (const [y, v] of Object.entries(byYear).sort()) doc.text(`   ${y}: ${money(cents(v))}`);
   doc.moveDown(1);
 
   // Ledger table
@@ -151,26 +169,43 @@ export function summaryPdfBuffer() {
   };
   drawHeader();
 
-  doc.font('Helvetica').fontSize(8);
-  for (const e of approved) {
-    const rowData = {
-      date: e.date, provider: e.provider || '', category: e.category || '',
-      description: e.description || '', amount: money(e.amount), reimbursed: e.reimbursed ? 'Yes' : 'No',
-    };
-    const heights = cols.map(c => doc.heightOfString(String(rowData[c.key]), { width: c.w - 6 }));
-    const rowH = Math.max(...heights) + 4;
-    if (doc.y + rowH > doc.page.height - doc.page.margins.bottom) {
-      doc.addPage();
-      drawHeader();
-      doc.font('Helvetica').fontSize(8);
+  const drawRows = list => {
+    doc.font('Helvetica').fontSize(8);
+    for (const e of list) {
+      const rowData = {
+        date: usDate(e.date), provider: e.provider || '', category: e.category || '',
+        description: e.description || '', amount: money(e.amount), reimbursed: e.reimbursed ? 'Yes' : 'No',
+      };
+      const heights = cols.map(c => doc.heightOfString(String(rowData[c.key]), { width: c.w - 6 }));
+      const rowH = Math.max(...heights) + 4;
+      if (doc.y + rowH > doc.page.height - doc.page.margins.bottom) {
+        doc.addPage();
+        drawHeader();
+        doc.font('Helvetica').fontSize(8);
+      }
+      const y = doc.y;
+      let x = startX;
+      for (const c of cols) {
+        doc.fillColor('#000').text(String(rowData[c.key]), x, y, { width: c.w - 6, align: c.align || 'left' });
+        x += c.w;
+      }
+      doc.y = y + rowH;
     }
-    const y = doc.y;
-    let x = startX;
-    for (const c of cols) {
-      doc.fillColor('#000').text(String(rowData[c.key]), x, y, { width: c.w - 6, align: c.align || 'left' });
-      x += c.w;
-    }
-    doc.y = y + rowH;
+  };
+  drawRows(approved);
+
+  if (records.length) {
+    if (doc.y + 80 > doc.page.height - doc.page.margins.bottom) doc.addPage();
+    doc.x = startX;
+    doc.moveDown(1.5);
+    doc.fontSize(11).font('Helvetica-Bold').fillColor('#000').text(`Kept as records — dated before the HSA was established (${usDate(est)})`, startX);
+    doc.fontSize(9).font('Helvetica').fillColor('#555').text(
+      `Not counted in any total above: the IRS only allows tax-free reimbursement of expenses incurred after the HSA was established. ${money(sum(records))} across ${records.length} item${records.length === 1 ? '' : 's'}.` +
+      (records.some(e => e.reimbursed) ? ' Items marked "Yes" under Reimb. were withdrawn from the HSA — review these with a tax preparer.' : ''), startX);
+    doc.fillColor('#000');
+    doc.moveDown(0.5);
+    drawHeader();
+    drawRows(records);
   }
 
   doc.end();

@@ -40,7 +40,7 @@ Makes everything after it safe to build. Non-negotiable if any later phase happe
 
 What makes it an HSA app rather than a receipt filer. Every item maps to a question an auditor would ask.
 
-- HSA establishment date in Settings; expenses dated before it get a hard warning and cannot be approved without an explicit override.
+- ~~HSA establishment date in Settings; expenses dated before it get a hard warning and cannot be approved without an explicit override.~~ Shipped in v1.6.0 (pre-HSA expenses are kept as records only).
 - Household members. Each expense is for a person; dependents are eligible, others are not.
 - Insurance-paid and patient-responsibility amounts on an expense; only the patient portion counts toward the balance.
 - Supporting documents attached to an expense: EOBs, Letters of Medical Necessity, prescriptions. A "needs LMN" item stays low-confidence until one is attached.

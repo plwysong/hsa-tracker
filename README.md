@@ -30,6 +30,8 @@ The app checks the releases page each time it opens and shows an **Update availa
 - **AI eligibility triage** — each line item gets a verdict, a confidence level, and a plain-English rationale that becomes part of the permanent record. Clearly ineligible items (groceries, electronics…) go to a Discarded log instead of cluttering the queue — never silently deleted, and re-queueable.
 - **Review queue** — approve / edit-then-approve / reject, individually, per-receipt, or in bulk. Supplements default to *Low confidence, needs a Letter of Medical Necessity* rather than being decided for you.
 - **Ledger** — searchable, filterable permanent record. Mark entries reimbursed when you eventually withdraw. Every row links to its source receipt.
+- **HSA establishment date** — set it in Settings. Expenses dated earlier can't be reimbursed tax-free, so approved ones are kept as *records only*: still in the ledger and exports, but not counted toward what you can withdraw (unless you mark one as counting, e.g. funds moved from an earlier HSA).
+- **Possible-duplicate warning** — the same purchase arriving twice (say, an emailed receipt and a photo of the paper one) is flagged before approval; "Not a duplicate" is remembered for that pair.
 - **Email ingestion (optional)** — point Settings at a dedicated free email account (e.g. a fresh Gmail with an [app password](https://myaccount.google.com/apppasswords)) and forward receipts to it; the app polls it over IMAP while running.
 - **Backup & export** — one-click zip of everything (CSV + JSON + PDF summary + all receipt files), or individual formats. The PDF summary is designed to hand to a tax preparer.
 - **Audit trail** — every decision, edit, and processing event is logged. Rejected items are kept, not deleted.

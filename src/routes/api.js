@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import { existsSync, unlinkSync } from 'node:fs';
-import { db, RECEIPTS_DIR, getSetting, setSetting, audit } from '../db.js';
+import { db, RECEIPTS_DIR, getSetting, setSetting, audit, establishedDate, countsSql, recordOnlySql, localToday, cents } from '../db.js';
 import { ingestDocument, retriageReceipt, listJobs, clearFinishedJobs } from '../lib/ingest.js';
 import { isSupported } from '../lib/extract.js';
 import { testProvider } from '../lib/triage.js';
@@ -76,27 +76,34 @@ api.get('/update-check', wrap(async (req, res) => {
 
 // ---------- Stats / dashboard ----------
 api.get('/stats', wrap((req, res) => {
+  // Totals and charts cover expenses that count toward withdrawals; records-only
+  // (dated before the HSA) are reported separately. Reimbursed is what actually left the HSA.
+  const counts = countsSql(), recordOnly = recordOnlySql();
   const totals = db.prepare(`
     SELECT
-      COALESCE(SUM(CASE WHEN status = 'approved' THEN amount END), 0) AS approved_total,
-      COALESCE(SUM(CASE WHEN status = 'approved' AND reimbursed = 1 THEN amount END), 0) AS reimbursed_total,
-      COALESCE(SUM(CASE WHEN status = 'pending_review' THEN amount END), 0) AS pending_total,
-      COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved_count,
+      ROUND(COALESCE(SUM(CASE WHEN ${counts} THEN amount END), 0), 2) AS approved_total,
+      ROUND(COALESCE(SUM(CASE WHEN status = 'approved' AND reimbursed = 1 THEN amount END), 0), 2) AS reimbursed_total,
+      ROUND(COALESCE(SUM(CASE WHEN ${counts} AND reimbursed = 0 THEN amount END), 0), 2) AS unreimbursed_total,
+      ROUND(COALESCE(SUM(CASE WHEN ${recordOnly} THEN amount END), 0), 2) AS record_only_total,
+      COALESCE(SUM(CASE WHEN ${recordOnly} THEN 1 ELSE 0 END), 0) AS record_only_count,
+      COALESCE(SUM(CASE WHEN ${recordOnly} AND reimbursed = 1 THEN 1 ELSE 0 END), 0) AS record_only_reimbursed_count,
+      ROUND(COALESCE(SUM(CASE WHEN status = 'pending_review' THEN amount END), 0), 2) AS pending_total,
+      COALESCE(SUM(CASE WHEN ${counts} THEN 1 ELSE 0 END), 0) AS approved_count,
       COALESCE(SUM(CASE WHEN status = 'pending_review' THEN 1 ELSE 0 END), 0) AS pending_count,
       COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected_count
     FROM expenses
   `).get();
   const byCategory = db.prepare(`
-    SELECT category, SUM(amount) AS total, COUNT(*) AS count
-    FROM expenses WHERE status = 'approved' GROUP BY category ORDER BY total DESC
+    SELECT category, ROUND(SUM(amount), 2) AS total, COUNT(*) AS count
+    FROM expenses WHERE ${counts} GROUP BY category ORDER BY total DESC
   `).all();
   const byYear = db.prepare(`
-    SELECT substr(date, 1, 4) AS year, SUM(amount) AS total, COUNT(*) AS count
-    FROM expenses WHERE status = 'approved' GROUP BY year ORDER BY year
+    SELECT substr(date, 1, 4) AS year, ROUND(SUM(amount), 2) AS total, COUNT(*) AS count
+    FROM expenses WHERE ${counts} GROUP BY year ORDER BY year
   `).all();
   const byMonth = db.prepare(`
-    SELECT substr(date, 1, 7) AS month, SUM(amount) AS total
-    FROM expenses WHERE status = 'approved' GROUP BY month ORDER BY month
+    SELECT substr(date, 1, 7) AS month, ROUND(SUM(amount), 2) AS total
+    FROM expenses WHERE ${counts} GROUP BY month ORDER BY month
   `).all();
   const recent = db.prepare(`
     SELECT e.*, r.filename AS receipt_filename FROM expenses e
@@ -107,15 +114,73 @@ api.get('/stats', wrap((req, res) => {
   const discarded_count = db.prepare('SELECT COUNT(*) AS n FROM discarded').get().n;
   res.json({
     ...totals,
-    unreimbursed_total: totals.approved_total - totals.reimbursed_total,
     receipts_count, discarded_count,
     byCategory, byYear, byMonth, recent,
   });
 }));
 
+// ---------- Possible duplicates ----------
+// The same purchase can arrive twice in different forms (an emailed receipt and a
+// photo of the paper one). Identical files are caught at upload; this catches the
+// rest: same date, same amount, similar provider, on different receipts (lines of
+// one receipt never match each other — two boxes on one order are two purchases).
+// Only approved and pending rows take part. It warns, never blocks for good: the
+// user can confirm "not a duplicate", which is remembered per pair.
+const LIVE = "('approved', 'pending_review')";
+const providerKey = p => String(p || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6);
+const similarProvider = (p, q) => {
+  const a = providerKey(p), b = providerKey(q);
+  return !a || !b || a === 'unknow' || b === 'unknow' || a === b;
+};
+const pairKey = (x, y) => (x < y ? [x, y] : [y, x]);
+const isDismissed = (x, y) => !!db.prepare('SELECT 1 FROM not_duplicates WHERE a = ? AND b = ?').get(...pairKey(x, y));
+
+/** Possible duplicates for one expense-shaped object ({id?, date, amount, provider, receipt_id}). */
+function duplicatesOf(e) {
+  return db.prepare(`
+    SELECT id, date, provider, description, amount, status, receipt_id FROM expenses
+    WHERE status IN ${LIVE} AND date = ? AND ROUND(amount, 2) = ROUND(?, 2) AND id != ?
+      AND NOT (? IS NOT NULL AND receipt_id IS ?)
+  `).all(e.date, Number(e.amount), e.id ?? -1, e.receipt_id ?? null, e.receipt_id ?? null)
+    .filter(o => similarProvider(e.provider, o.provider) && (e.id == null || !isDismissed(e.id, o.id)));
+}
+
+/** Map of expense id → its possible duplicates, across every live expense. */
+function duplicateMap() {
+  const pairs = db.prepare(`
+    SELECT x.id AS id, y.id AS other, x.provider AS p, y.provider AS q
+    FROM expenses x JOIN expenses y
+      ON x.date = y.date AND ROUND(x.amount, 2) = ROUND(y.amount, 2) AND x.id != y.id
+    WHERE x.status IN ${LIVE} AND y.status IN ${LIVE}
+      AND NOT (x.receipt_id IS NOT NULL AND x.receipt_id IS y.receipt_id)
+  `).all();
+  const map = new Map();
+  for (const r of pairs) {
+    if (!similarProvider(r.p, r.q) || isDismissed(r.id, r.other)) continue;
+    if (!map.has(r.id)) map.set(r.id, []);
+    map.get(r.id).push(r.other);
+  }
+  return map;
+}
+function withDuplicates(rows) {
+  const map = duplicateMap();
+  if (!map.size) return rows;
+  const brief = db.prepare('SELECT id, date, provider, description, amount, status FROM expenses WHERE id = ?');
+  for (const r of rows) if (map.has(r.id)) r.duplicates = map.get(r.id).map(id => brief.get(id));
+  return rows;
+}
+function dismissDuplicates(id, others) {
+  const ins = db.prepare('INSERT OR IGNORE INTO not_duplicates (a, b) VALUES (?, ?)');
+  for (const o of others) ins.run(...pairKey(Number(id), Number(o)));
+}
+const possibleDuplicate = (res, matches) => res.status(409).json({
+  code: 'possible_duplicate', matches,
+  error: 'This looks like an expense already in your ledger — same date, amount and provider.',
+});
+
 // ---------- Expenses ----------
 api.get('/expenses', wrap((req, res) => {
-  const { status, category, year, q, confidence, source, reimbursed, receipt_id } = req.query;
+  const { status, category, year, q, confidence, source, reimbursed, receipt_id, pre_hsa } = req.query;
   const clauses = [], params = [];
   if (receipt_id) { clauses.push('e.receipt_id = ?'); params.push(Number(receipt_id)); }
   if (status) { clauses.push('e.status = ?'); params.push(status); }
@@ -125,6 +190,7 @@ api.get('/expenses', wrap((req, res) => {
   if (source) { clauses.push('e.source_type = ?'); params.push(source); }
   if (reimbursed === 'yes') clauses.push('e.reimbursed = 1');
   if (reimbursed === 'no') clauses.push('e.reimbursed = 0');
+  if (pre_hsa === '1') { clauses.push('e.date < ?'); params.push(establishedDate() || '0000-00-00'); }
   if (q) {
     clauses.push("(e.description LIKE ? ESCAPE '\\' OR e.provider LIKE ? ESCAPE '\\' OR e.rationale LIKE ? ESCAPE '\\' OR e.order_ref LIKE ? ESCAPE '\\')");
     const like = `%${String(q).replace(/[\\%_]/g, c => '\\' + c)}%`;
@@ -136,7 +202,7 @@ api.get('/expenses', wrap((req, res) => {
     FROM expenses e LEFT JOIN receipts r ON r.id = e.receipt_id
     ${where} ORDER BY e.date DESC, e.id DESC
   `).all(...params);
-  res.json(rows);
+  res.json(withDuplicates(rows));
 }));
 
 api.get('/expenses/:id(\\d+)', wrap((req, res) => {
@@ -145,7 +211,7 @@ api.get('/expenses/:id(\\d+)', wrap((req, res) => {
     FROM expenses e LEFT JOIN receipts r ON r.id = e.receipt_id WHERE e.id = ?
   `).get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
-  res.json(row);
+  res.json(withDuplicates([row])[0]);
 }));
 
 api.delete('/expenses/:id', wrap((req, res) => {
@@ -161,12 +227,18 @@ api.post('/expenses', wrap((req, res) => {
   if (!isValidDate(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
   if (!description) return res.status(400).json({ error: 'description is required' });
   if (!isValidAmount(amount)) return res.status(400).json({ error: 'amount must be a positive number' });
+  const est = establishedDate();
+  const before = est && date < est;
+  if (before && !PRE_HSA.includes(req.body.pre_hsa)) return beforeEstablished(res, est, 1, 1);
+  const dups = duplicatesOf({ date, amount, provider, receipt_id: receipt_id || null });
+  if (dups.length && !req.body.not_duplicate) return possibleDuplicate(res, dups);
   const r = db.prepare(`
-    INSERT INTO expenses (date, provider, category, description, amount, payment_method, status, confidence, rationale, source_type, receipt_id, order_ref, notes, decided_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'approved', 'High', 'Manually added by user.', 'manual', ?, ?, ?, ?)
-  `).run(date, provider || '', category || 'Other', description, Number(amount), payment_method || null,
-    receipt_id || null, order_ref || null, notes || null, new Date().toISOString());
-  audit('manual_add', { id: Number(r.lastInsertRowid), description, amount });
+    INSERT INTO expenses (date, provider, category, description, amount, payment_method, status, confidence, rationale, source_type, receipt_id, order_ref, notes, decided_at, pre_hsa_override)
+    VALUES (?, ?, ?, ?, ?, ?, 'approved', 'High', 'Manually added by user.', 'manual', ?, ?, ?, ?, ?)
+  `).run(date, provider || '', category || 'Other', description, cents(amount), payment_method || null,
+    receipt_id || null, order_ref || null, notes || null, new Date().toISOString(), before && req.body.pre_hsa === 'count' ? 1 : 0);
+  if (dups.length) dismissDuplicates(r.lastInsertRowid, dups.map(d => d.id));
+  audit('manual_add', { id: Number(r.lastInsertRowid), description, amount, ...(before && { before_established: est, pre_hsa: req.body.pre_hsa }), ...(dups.length && { not_duplicate_of: dups.map(d => d.id) }) });
   res.json({ id: Number(r.lastInsertRowid) });
 }));
 
@@ -176,7 +248,7 @@ api.patch('/expenses/:id', wrap((req, res) => {
   if ('amount' in req.body && !isValidAmount(req.body.amount)) return res.status(400).json({ error: 'amount must be a positive number' });
   const sets = [], params = [];
   for (const k of allowed) {
-    if (k in req.body) { sets.push(`${k} = ?`); params.push(k === 'amount' ? Number(req.body[k]) : req.body[k]); }
+    if (k in req.body) { sets.push(`${k} = ?`); params.push(k === 'amount' ? cents(req.body[k]) : req.body[k]); }
   }
   if (!sets.length) return res.status(400).json({ error: 'No editable fields provided' });
   sets.push("updated_at = datetime('now')");
@@ -186,14 +258,61 @@ api.patch('/expenses/:id', wrap((req, res) => {
   res.json({ ok: true });
 }));
 
-function decide(id, status) {
-  return db.prepare("UPDATE expenses SET status = ?, decided_at = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(status, new Date().toISOString(), id).changes;
+// Approving an expense dated before the HSA was established needs an explicit
+// choice (the UI asks): 'record' keeps it as a record that doesn't count toward
+// withdrawals; 'count' marks it as counting anyway (pre_hsa_override).
+const PRE_HSA = ['record', 'count'];
+function predating(ids) {
+  const est = establishedDate();
+  if (!est) return [];
+  return ids.filter(id => {
+    const row = db.prepare('SELECT date FROM expenses WHERE id = ?').get(id);
+    return row && row.date < est;
+  });
+}
+const beforeEstablished = (res, est, count, total) => res.status(409).json({
+  code: 'before_established', established: est, count, total,
+  error: `${total === 1 ? 'This expense is' : `${count} of ${total} expenses ${count === 1 ? 'is' : 'are'}`} dated before your HSA was established (${est}).`,
+});
+
+function decide(id, status, override = false) {
+  return db.prepare("UPDATE expenses SET status = ?, decided_at = ?, pre_hsa_override = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(status, new Date().toISOString(), override ? 1 : 0, id).changes;
 }
 
 api.post('/expenses/:id/approve', wrap((req, res) => {
-  if (!decide(req.params.id, 'approved')) return res.status(404).json({ error: 'Not found' });
-  audit('approve', { id: Number(req.params.id) });
+  const early = predating([Number(req.params.id)]).length > 0;
+  const choice = req.body?.pre_hsa;
+  if (early && !PRE_HSA.includes(choice)) return beforeEstablished(res, establishedDate(), 1, 1);
+  const self = db.prepare('SELECT * FROM expenses WHERE id = ?').get(req.params.id);
+  const dups = self ? duplicatesOf(self) : [];
+  if (dups.length && !req.body?.not_duplicate) return possibleDuplicate(res, dups);
+  if (dups.length) dismissDuplicates(self.id, dups.map(d => d.id));
+  if (!decide(req.params.id, 'approved', early && choice === 'count')) return res.status(404).json({ error: 'Not found' });
+  audit('approve', { id: Number(req.params.id), ...(early && { before_established: establishedDate(), pre_hsa: choice }), ...(dups.length && { not_duplicate_of: dups.map(d => d.id) }) });
+  res.json({ ok: true });
+}));
+
+// "Not a duplicate": remember every current match for this expense.
+api.post('/expenses/:id/not-duplicate', wrap((req, res) => {
+  const self = db.prepare('SELECT * FROM expenses WHERE id = ?').get(req.params.id);
+  if (!self) return res.status(404).json({ error: 'Not found' });
+  const others = duplicatesOf(self).map(d => d.id);
+  dismissDuplicates(self.id, others);
+  audit('not_duplicate', { id: self.id, of: others });
+  res.json({ ok: true, count: others.length });
+}));
+
+// Switch an approved pre-HSA expense between record-only and counting.
+api.post('/expenses/:id/pre-hsa', wrap((req, res) => {
+  const row = db.prepare('SELECT status FROM expenses WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Not found' });
+  if (row.status !== 'approved' || !predating([Number(req.params.id)]).length) {
+    return res.status(400).json({ error: 'Only approved expenses dated before your HSA was established can be switched' });
+  }
+  const count = !!req.body?.count;
+  db.prepare("UPDATE expenses SET pre_hsa_override = ?, updated_at = datetime('now') WHERE id = ?").run(count ? 1 : 0, req.params.id);
+  audit('pre_hsa', { id: Number(req.params.id), counts: count, before_established: establishedDate() });
   res.json({ ok: true });
 }));
 
@@ -216,17 +335,29 @@ api.post('/expenses/bulk', wrap((req, res) => {
     return res.status(400).json({ error: `ids array and action (${ACTIONS.join('|')}) required` });
   }
   if (action === 'category' && !category) return res.status(400).json({ error: 'category required' });
+  const early = action === 'approve' ? predating(ids) : [];
+  if (early.length && !PRE_HSA.includes(req.body.pre_hsa)) return beforeEstablished(res, establishedDate(), early.length, ids.length);
+  // Matches inside the batch count too (the same purchase from two receipts approved together).
+  const dupPairs = action !== 'approve' ? [] : ids.flatMap(id => {
+    const self = db.prepare('SELECT * FROM expenses WHERE id = ?').get(id);
+    return self ? duplicatesOf(self).map(d => ({ id: Number(id), other: d })) : [];
+  });
+  if (dupPairs.length && !req.body.not_duplicate) {
+    const seen = new Set();
+    return possibleDuplicate(res, dupPairs.map(p => p.other).filter(o => !seen.has(o.id) && seen.add(o.id)));
+  }
+  for (const p of dupPairs) dismissDuplicates(p.id, [p.other.id]);
   let affected = 0;
   for (const id of ids) {
-    if (action === 'approve') affected += decide(id, 'approved');
+    if (action === 'approve') affected += decide(id, 'approved', early.includes(id) && req.body.pre_hsa === 'count');
     else if (action === 'reject') affected += decide(id, 'rejected');
     else if (action === 'reopen') affected += decide(id, 'pending_review');
-    else if (action === 'reimburse') affected += db.prepare("UPDATE expenses SET reimbursed = 1, date_reimbursed = ?, updated_at = datetime('now') WHERE id = ? AND status = 'approved'").run(date_reimbursed || new Date().toISOString().slice(0, 10), id).changes;
+    else if (action === 'reimburse') affected += db.prepare("UPDATE expenses SET reimbursed = 1, date_reimbursed = ?, updated_at = datetime('now') WHERE id = ? AND status = 'approved'").run(date_reimbursed || localToday(), id).changes;
     else if (action === 'unreimburse') affected += db.prepare("UPDATE expenses SET reimbursed = 0, date_reimbursed = NULL, updated_at = datetime('now') WHERE id = ?").run(id).changes;
     else if (action === 'delete') affected += db.prepare('DELETE FROM expenses WHERE id = ?').run(id).changes;
     else if (action === 'category') affected += db.prepare("UPDATE expenses SET category = ?, updated_at = datetime('now') WHERE id = ?").run(category, id).changes;
   }
-  audit('bulk_' + action, { count: affected, ids, date_reimbursed, category });
+  audit('bulk_' + action, { count: affected, ids, date_reimbursed, category, ...(early.length && { before_established: establishedDate(), pre_hsa: req.body.pre_hsa, pre_hsa_ids: early }) });
   res.json({ ok: true, count: affected });
 }));
 
@@ -238,7 +369,7 @@ api.post('/expenses/:id/reimburse', wrap((req, res) => {
     return res.status(400).json({ error: 'Only approved expenses can be marked reimbursed' });
   }
   db.prepare("UPDATE expenses SET reimbursed = ?, date_reimbursed = ?, updated_at = datetime('now') WHERE id = ?")
-    .run(reimbursed ? 1 : 0, reimbursed ? (date_reimbursed || new Date().toISOString().slice(0, 10)) : null, req.params.id);
+    .run(reimbursed ? 1 : 0, reimbursed ? (date_reimbursed || localToday()) : null, req.params.id);
   audit('reimburse', { id: Number(req.params.id), reimbursed: !!reimbursed });
   res.json({ ok: true });
 }));
@@ -347,7 +478,7 @@ api.post('/discarded/:id/requeue', wrap((req, res) => {
   const r = db.prepare(`
     INSERT INTO expenses (date, provider, category, description, amount, status, confidence, rationale, source_type, receipt_id)
     VALUES (?, ?, 'Other', ?, ?, 'pending_review', 'Low', ?, 'manual', ?)
-  `).run(docDate || new Date().toISOString().slice(0, 10), '', d.description, d.amount,
+  `).run(docDate || localToday(), '', d.description, cents(d.amount),
     `Originally auto-discarded ("${d.reason}") — re-queued by user for reconsideration.`, d.receipt_id);
   audit('requeue_discarded', { discardedId: d.id, newExpenseId: Number(r.lastInsertRowid) });
   res.json({ id: Number(r.lastInsertRowid) });
@@ -358,7 +489,7 @@ api.get('/audit', wrap((req, res) => {
 }));
 
 // ---------- Settings ----------
-const SETTING_KEYS = ['ai_provider', 'anthropic_api_key', 'openai_api_key', 'email_enabled', 'email_host', 'email_port', 'email_user', 'email_password', 'email_poll_minutes', 'categories'];
+const SETTING_KEYS = ['ai_provider', 'anthropic_api_key', 'openai_api_key', 'email_enabled', 'email_host', 'email_port', 'email_user', 'email_password', 'email_poll_minutes', 'categories', 'hsa_established'];
 const SECRET_KEYS = ['anthropic_api_key', 'openai_api_key', 'email_password'];
 
 api.get('/settings', wrap((req, res) => {
@@ -373,6 +504,9 @@ const AI_PROVIDERS = ['anthropic-api', 'openai-api', 'keywords'];
 api.put('/settings', wrap((req, res) => {
   if ('ai_provider' in req.body && !AI_PROVIDERS.includes(req.body.ai_provider)) {
     return res.status(400).json({ error: `ai_provider must be one of: ${AI_PROVIDERS.join(', ')}` });
+  }
+  if (req.body.hsa_established && !isValidDate(req.body.hsa_established)) {
+    return res.status(400).json({ error: 'hsa_established must be YYYY-MM-DD' });
   }
   for (const k of SETTING_KEYS) {
     if (!(k in req.body)) continue;
@@ -436,6 +570,6 @@ api.get('/export/pdf', wrap(async (req, res) => {
 
 api.get('/export/zip', wrap(async (req, res) => {
   res.type('application/zip');
-  res.setHeader('Content-Disposition', `attachment; filename="HSA-full-backup-${new Date().toISOString().slice(0, 10)}.zip"`);
+  res.setHeader('Content-Disposition', `attachment; filename="HSA-full-backup-${localToday()}.zip"`);
   await fullZip(res);
 }));
