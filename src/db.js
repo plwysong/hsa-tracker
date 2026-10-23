@@ -173,6 +173,8 @@ const DEFAULT_SETTINGS = {
   backup_auto: true,              // back up to backup_dir (or iCloud Drive) after changes
   backup_plain: true,             // also keep readable copies alongside each backup
   backup_dir: '',                 // '' = iCloud Drive, when it's turned on
+  inbox_enabled: true,            // import whatever is saved to <backup folder>/Inbox
+  print_enabled: true,            // "Save PDF to HSA Tracker" in the Print dialog (desktop app)
 };
 
 for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {

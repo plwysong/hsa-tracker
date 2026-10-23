@@ -11,7 +11,7 @@ Everything runs on your own machine: a Node.js server, a SQLite database, and a 
 1. **Download the installer** from the [releases page](https://github.com/plwysong/hsa-tracker/releases/latest).
 2. Open the DMG and drag **HSA Tracker** into **Applications**.
 3. **First launch:** the app isn't code-signed with an Apple developer certificate, so macOS will block the first open. Double-click it, dismiss the warning, then go to System Settings → **Privacy & Security** → scroll down → **Open Anyway**. (On older macOS, right-click the app → **Open** → **Open** is enough.) This happens once per version.
-4. In **Settings**, pick an AI engine — for most people, paste a Claude or OpenAI API key (links and instructions are right there in Settings). Then hit *Test triage engine*.
+4. In **Settings → Eligibility checks**, paste a Claude or ChatGPT API key (links are right there). The app recognizes which one it is and tests it immediately. Without a key, receipts are checked with free keyword matching.
 
 No Node.js, no terminal, no dependencies — the app is fully self-contained.
 
@@ -33,7 +33,9 @@ The app checks the releases page each time it opens and shows an **Update availa
 - **HSA establishment date** — set it in Settings. Expenses dated earlier can't be reimbursed tax-free, so approved ones are kept as *records only*: still in Expenses and exports, but not counted toward what you can withdraw (unless you mark one as counting, e.g. funds moved from an earlier HSA).
 - **What was actually paid, with proof** — discounts and credits are spread across a receipt's lines so each shows what was really paid, and a warning appears if the lines add up to more than was paid. A card slip uploaded alongside an invoice is recognized as proof of payment: it's linked to the invoice, kept with it (including in backups), and never counted as a second expense.
 - **Possible-duplicate warning** — the same purchase arriving twice (say, an emailed receipt and a photo of the paper one) is flagged before approval; "Not a duplicate" is remembered for that pair.
-- **Email ingestion (optional)** — point Settings at a dedicated free email account (e.g. a fresh Gmail with an [app password](https://myaccount.google.com/apppasswords)) and forward receipts to it; the app polls it over IMAP while running.
+- **HSA Inbox folder** — anything saved to `iCloud Drive/HSA Tracker/Inbox` (from a Mac, or an iPhone via Share → Save to Files) is imported automatically, then moved to `Inbox/Imported`.
+- **Print to HSA Tracker** — the desktop app adds "Save PDF to HSA Tracker" to the Print dialog's PDF menu (an entry in `~/Library/PDF Services`), which saves straight into the Inbox.
+- **Email (advanced, optional)** — point Settings at a dedicated email account (e.g. a fresh Gmail with an [app password](https://myaccount.google.com/apppasswords)) and forward receipts to it; the app checks it over IMAP while running.
 - **Automatic iCloud backups & restore** — a complete backup lands in your iCloud Drive a few minutes after any change, with readable copies of every receipt; a new Mac offers to restore it on first launch.
 - **Backup & export** — the **Export** menu in Expenses has the tax summary PDF (designed to hand to a tax preparer), spreadsheet CSVs, all receipt files, and a one-click zip of everything (CSV + JSON + PDF summary + all receipt files). The backup zip is also in Settings.
 - **Audit trail** — every decision, edit, and processing event is logged. Rejected items are kept, not deleted.

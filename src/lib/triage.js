@@ -277,8 +277,10 @@ export async function triageReceipt(rawText) {
     if (parsed.document_type === 'payment_only') parsed.items = []; // recorded via total_paid, never as an expense
     parsed.total_paid = Number(parsed.total_paid) > 0 ? Number(parsed.total_paid) : null;
     parsed.discounts = Number(parsed.discounts) > 0 ? Number(parsed.discounts) : 0;
+    setSetting('ai_last_test', { ok: true, at: new Date().toISOString() }); // Settings shows whether AI is working
     return { ...parsed, ai_provider: providerName };
   } catch (err) {
+    setSetting('ai_last_test', { ok: false, at: new Date().toISOString(), error: err.message });
     // AI provider unavailable — degrade to keyword triage rather than losing the receipt.
     const fallback = keywordTriage(rawText);
     fallback.items = fallback.items.map(i => ({

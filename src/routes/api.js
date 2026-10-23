@@ -4,6 +4,7 @@ import path from 'node:path';
 import { existsSync, unlinkSync } from 'node:fs';
 import { db, RECEIPTS_DIR, getSetting, setSetting, audit, establishedDate, countsSql, recordOnlySql, localToday, cents, SECRET_KEYS } from '../db.js';
 import { runBackup, listBackups, restoreBackup, backupStatus, backupFolder, icloudFolder } from '../lib/backup.js';
+import { intakeStatus, inboxFolder, scanInbox, syncPrintEntry } from '../lib/inbox.js';
 import { ingestDocument, retriageReceipt, listJobs, clearFinishedJobs } from '../lib/ingest.js';
 import { linkPayments } from '../lib/payments.js';
 import { isSupported } from '../lib/extract.js';
@@ -646,6 +647,7 @@ api.post('/backup/folder', wrap(async (req, res) => {
     setSetting('backup_dir', path.basename(picked) === 'HSA Tracker' ? picked : path.join(picked, 'HSA Tracker'));
   }
   audit('backup_folder', { folder: backupFolder() });
+  syncPrintEntry(); // the Inbox lives in the backup folder, so the Print entry follows it
   res.json(backupStatus());
 }));
 
@@ -653,6 +655,27 @@ api.post('/backup/reveal', wrap(async (req, res) => {
   const folder = backupFolder();
   if (!folder || !existsSync(folder)) return res.status(400).json({ error: 'No backup has been made yet.' });
   if (!process.versions.electron) return res.status(400).json({ error: `Backups are in ${folder}` });
+  const { shell } = await import('electron');
+  await shell.openPath(folder);
+  res.json({ ok: true });
+}));
+
+// ---------- Getting receipts in (Inbox folder, Print menu) ----------
+api.get('/intake/status', wrap((req, res) => res.json(intakeStatus())));
+
+api.put('/intake/settings', wrap(async (req, res) => {
+  if ('inbox' in req.body) setSetting('inbox_enabled', !!req.body.inbox);
+  if ('print' in req.body) setSetting('print_enabled', !!req.body.print);
+  syncPrintEntry();
+  if (req.body.inbox) await scanInbox();
+  res.json(intakeStatus());
+}));
+
+api.post('/intake/reveal', wrap(async (req, res) => {
+  const folder = inboxFolder();
+  if (!folder) return res.status(400).json({ error: 'The Inbox folder needs iCloud Drive or a backup folder — see Backup below.' });
+  await scanInbox(); // also makes sure the folder exists
+  if (!process.versions.electron) return res.status(400).json({ error: `The Inbox folder is ${folder}` });
   const { shell } = await import('electron');
   await shell.openPath(folder);
   res.json({ ok: true });
@@ -678,6 +701,51 @@ api.get('/backup/found', wrap((req, res) => {
   const empty = !db.prepare('SELECT 1 FROM receipts LIMIT 1').get() && !db.prepare('SELECT 1 FROM expenses LIMIT 1').get();
   const latest = empty ? listBackups(backupFolder() || icloudFolder()).find(b => !b.beforeRestore && (b.expenses || b.receipts)) : null;
   res.json({ backup: latest ? { ...latest, inICloud: latest.folder === icloudFolder() } : null });
+}));
+
+// ---------- AI key (one field: the key says which service it's for) ----------
+const KEY_FOR = { 'anthropic-api': 'anthropic_api_key', 'openai-api': 'openai_api_key' };
+function aiStatus() {
+  const provider = getSetting('ai_provider', 'keywords');
+  const key = KEY_FOR[provider] ? String(getSetting(KEY_FOR[provider], '') || '') : '';
+  return {
+    provider: key ? provider : 'keywords',
+    keyEnding: key ? key.slice(-4) : '',
+    lastTest: key ? getSetting('ai_last_test', null) : null,
+  };
+}
+api.get('/ai/status', wrap((req, res) => res.json(aiStatus())));
+
+api.post('/ai/key', wrap(async (req, res) => {
+  const key = String(req.body?.key || '').trim();
+  if (!key) {
+    // An empty key turns AI off: receipts are checked with keyword matching.
+    for (const k of Object.values(KEY_FOR)) setSetting(k, '');
+    setSetting('ai_provider', 'keywords');
+    setSetting('ai_last_test', null);
+    audit('ai_key', { provider: 'keywords' });
+    return res.json(aiStatus());
+  }
+  const provider = /^sk-ant-/.test(key) ? 'anthropic-api' : /^sk-/.test(key) ? 'openai-api' : null;
+  if (!provider) return res.status(400).json({ error: "That doesn't look like an API key — Claude keys start with sk-ant-, ChatGPT keys with sk-." });
+  // Try the new key before switching to it, so a typo never breaks a working setup.
+  const before = { provider: getSetting('ai_provider'), key: getSetting(KEY_FOR[provider]) };
+  setSetting('ai_provider', provider);
+  setSetting(KEY_FOR[provider], key);
+  try {
+    const r = await testProvider();
+    if (!r.ok) throw new Error('The service answered, but not as expected.');
+  } catch (err) {
+    setSetting('ai_provider', before.provider);
+    setSetting(KEY_FOR[provider], before.key ?? '');
+    const rejected = /\b401\b|invalid.{0,10}(api.)?key|incorrect api key|authentication/i.test(err.message);
+    return res.status(400).json({ error: rejected
+      ? `${provider === 'anthropic-api' ? 'Anthropic' : 'OpenAI'} didn't accept that key — check that you copied all of it, or create a new one.`
+      : `Couldn't check the key right now (${err.message.split('\n')[0].slice(0, 120)}). Your previous setting is unchanged.` });
+  }
+  setSetting('ai_last_test', { ok: true, at: new Date().toISOString() });
+  audit('ai_key', { provider });
+  res.json(aiStatus());
 }));
 
 api.post('/ai/test', wrap(async (req, res) => {

@@ -1603,193 +1603,221 @@ views.discarded = async function () {
 views.settings = async function () {
   main.innerHTML = '<div class="empty">Loading…</div>';
   const s = await api('/settings');
-  const emailStat = await api('/email/status');
 
+  // Each section shows how things are; setup steps only appear when something isn't set up yet.
   main.innerHTML = `
-    <div class="page-head"><div><h1>Settings</h1><div class="sub">Your HSA, AI engine, email ingestion, and backups. Changes save automatically.<span class="test-result ok" id="save-status"></span></div></div></div>
+    <div class="page-head"><div><h1>Settings</h1><div class="sub">Changes save automatically.</div></div></div>
 
     <div class="settings-form">
       <div class="card settings-section">
         <h3>Your HSA</h3>
-        <div class="s-sub">Only expenses from on or after the day your HSA was established can be reimbursed. Anything dated earlier is flagged and needs a second confirmation to approve.</div>
-        <div class="field" style="max-width:220px"><label for="set-hsa-established">Date your HSA was established</label><input type="date" id="set-hsa-established" value="${esc(s.hsa_established || '')}"></div>
-        <div id="pre-hsa-summary"></div>
-        <div class="inline-note" style="margin:0">Find it on your HSA provider's welcome email, first statement, or account details page. <strong>Moved money in from an earlier HSA?</strong> If it was a direct transfer or rollover and the old account never hit $0, use the <em>earlier</em> account's start date — older expenses may still qualify.</div>
+        <div class="set-inline"><label for="set-hsa-established">Date your HSA was established</label>
+          <input type="date" id="set-hsa-established" value="${esc(s.hsa_established || '')}"></div>
+        <div class="set-hint">Expenses before this date are kept as records, not counted.<br>Moved money from an earlier HSA? Use that account's start date.</div>
       </div>
-
+      <div class="card settings-section" id="ai-section"></div>
+      <div class="card settings-section" id="intake-section"></div>
+      <div class="card settings-section" id="backup-section"></div>
+      ${navigator.userAgent.includes('Electron') ? '' : `
       <div class="card settings-section">
-        <h3>AI eligibility triage</h3>
-        <div class="s-sub">How receipts are split into line items and judged for HSA eligibility.</div>
-        <div class="radio-row">
-          <label><input type="radio" name="ai" value="anthropic-api" ${s.ai_provider === 'anthropic-api' ? 'checked' : ''}>
-            <span><strong>Claude (Anthropic) API key</strong> (recommended)
-            <span class="r-sub">Create a key at <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> and paste it below. Uses Claude's Sonnet model, kept up to date automatically — costs pennies per receipt.</span></span></label>
-          <div class="field ai-fields" data-provider="anthropic-api" ${s.ai_provider !== 'anthropic-api' ? 'hidden' : ''}>
-            <label for="set-api-key">Anthropic API key</label>
-            <input type="password" id="set-api-key" value="${esc(s.anthropic_api_key)}" placeholder="sk-ant-…">
-            <div class="test-row"><button class="btn small ai-test">Test connection</button><span class="test-result"></span></div>
-          </div>
-          <label><input type="radio" name="ai" value="openai-api" ${s.ai_provider === 'openai-api' ? 'checked' : ''}>
-            <span><strong>ChatGPT (OpenAI) API key</strong>
-            <span class="r-sub">Same idea with OpenAI's models. Create a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a> and paste it below. Uses OpenAI's small "mini" model, kept up to date automatically — costs pennies per receipt.</span></span></label>
-          <div class="field ai-fields" data-provider="openai-api" ${s.ai_provider !== 'openai-api' ? 'hidden' : ''}>
-            <label for="set-openai-key">OpenAI API key</label>
-            <input type="password" id="set-openai-key" value="${esc(s.openai_api_key)}" placeholder="sk-…">
-            <div class="test-row"><button class="btn small ai-test">Test connection</button><span class="test-result"></span></div>
-          </div>
-          <label><input type="radio" name="ai" value="keywords" ${s.ai_provider === 'keywords' ? 'checked' : ''}>
-            <span><strong>No AI (offline keyword matching)</strong>
-            <span class="r-sub">Free and private, but coarse — only flags items with obvious medical keywords.</span></span></label>
-        </div>
-      </div>
-
-      <div class="card settings-section">
-        <h3>Email ingestion (optional)</h3>
-        <div class="s-sub">Point this at a dedicated free email account (e.g. a new Gmail with an <a href="https://myaccount.google.com/apppasswords" target="_blank">app password</a>) and forward receipts to it. The app polls it over IMAP — nothing is exposed publicly, and it only runs while the app is running.</div>
-        <div class="field"><label><input type="checkbox" id="set-email-enabled" ${s.email_enabled ? 'checked' : ''} style="width:auto;margin-right:6px">Enable email ingestion</label></div>
-        <div id="email-fields" ${s.email_enabled ? '' : 'hidden'}>
-          <div class="field"><label for="set-email-host">IMAP host</label><input id="set-email-host" value="${esc(s.email_host)}"></div>
-          <div class="field"><label for="set-email-port">IMAP port</label><input id="set-email-port" type="number" value="${esc(s.email_port)}"></div>
-          <div class="field"><label for="set-email-user">Email address</label><input id="set-email-user" value="${esc(s.email_user)}" placeholder="my-hsa-receipts@gmail.com"></div>
-          <div class="field"><label for="set-email-pass">App password</label><input id="set-email-pass" type="password" value="${esc(s.email_password)}"></div>
-          <div class="field"><label for="set-email-poll">Check every (minutes)</label><input id="set-email-poll" type="number" value="${esc(s.email_poll_minutes)}"></div>
-          <button class="btn small" id="email-check">Check inbox now</button><span class="test-result" id="email-test-result"></span>
-          ${emailStat.lastCheck?.at ? `<div class="inline-note" style="margin-top:8px">Last check: ${new Date(emailStat.lastCheck.at).toLocaleString()} — ${emailStat.lastCheck.error ? 'error: ' + esc(emailStat.lastCheck.error) : `processed ${emailStat.lastCheck.result.processed}, skipped ${emailStat.lastCheck.result.skipped}`}</div>` : ''}
-          ${emailStat.recentSkipped?.length ? `
-          <div class="skipped-emails">
-            <div class="se-title">Couldn't be read as receipts (${emailStat.recentSkipped.length})</div>
-            <div class="se-note">These emails stayed in your inbox — the app couldn't pull a receipt from them. Handle them manually, or forward one with the receipt as a proper attachment.</div>
-            ${emailStat.recentSkipped.map(m => `<div class="se-row"><span class="se-subj">${esc(m.subject || '(no subject)')}</span><span class="se-reason">${esc(m.reason)}</span></div>`).join('')}
-          </div>` : ''}
-        </div>
-      </div>
-    </div>
-
-    <div class="settings-form">
-      <div class="card settings-section" style="margin-top:16px" id="backup-section"></div>
-    </div>
-
-    ${navigator.userAgent.includes('Electron') ? '' : `
-    <div class="settings-form">
-      <div class="card settings-section" style="margin-top:16px">
         <h3>App</h3>
         <div class="s-sub">HSA Tracker works like a regular app: the icon opens it, and a few minutes after you close this tab it shuts itself down. Receipt processing and email checking happen while it's open.</div>
         <button class="btn small ghost" id="app-quit">Quit now instead of waiting</button>
-      </div>
-    </div>`}
-`;
+      </div>`}
+    </div>`;
 
-  // What the establishment date means for expenses already in the ledger — shown
-  // whenever a date is set, so changing it never silently changes the totals.
-  const showPreHsaSummary = async () => {
-    const el = $('#pre-hsa-summary');
-    if (!el) return;
-    const st = await api('/stats');
-    el.innerHTML = st.record_only_count ? `<div class="pre-hsa-note info">
-      <strong>${st.record_only_count} approved expense${st.record_only_count === 1 ? '' : 's'} (${money(st.record_only_total)})</strong> ${st.record_only_count === 1 ? 'is' : 'are'} dated before this.
-      ${st.record_only_count === 1 ? 'It stays' : 'They stay'} in your expenses as records but no longer count toward what you can withdraw.
-      ${st.record_only_reimbursed_count ? `<strong>${st.record_only_reimbursed_count} ${st.record_only_reimbursed_count === 1 ? 'was' : 'were'} already reimbursed from your HSA</strong> — worth reviewing with a tax preparer.` : ''}
-      If one does qualify, open it in Expenses and choose "It qualifies — count it".
-      <div style="margin-top:8px"><button class="btn small" id="pre-hsa-view">View them in Expenses</button></div></div>` : '';
-    $('#pre-hsa-view')?.addEventListener('click', () => {
-      Object.assign(ledgerFilters, { status: 'approved', pre_hsa: '1' });
-      navigate('ledger');
-    });
-  };
-  showPreHsaSummary();
-
-  $$('input[name="ai"]').forEach(r => r.addEventListener('change', () => {
-    const v = document.querySelector('input[name="ai"]:checked').value;
-    $$('.ai-fields').forEach(f => f.hidden = f.dataset.provider !== v);
-  }));
-
-  $('#set-email-enabled').addEventListener('change', e => {
-    $('#email-fields').hidden = !e.target.checked;
+  // Changing the date changes the totals — say so right away, in one line.
+  $('#set-hsa-established').addEventListener('change', async e => {
+    try {
+      await api('/settings', { method: 'PUT', body: { hsa_established: e.target.value } });
+      const st = await api('/stats');
+      const n = st.record_only_count;
+      toast(!e.target.value ? 'Saved — with no date set, every approved expense counts'
+        : n ? `Saved — ${n} approved expense${n === 1 ? '' : 's'} (${money(st.record_only_total)}) ${n === 1 ? 'is' : 'are'} before this date and kept as records, not counted`
+          : 'Saved — no approved expenses are dated before this', 6000);
+    } catch (err) { toastError(err); }
   });
 
-  const saveSettings = () => api('/settings', { method: 'PUT', body: {
-    ai_provider: document.querySelector('input[name="ai"]:checked').value,
-    anthropic_api_key: $('#set-api-key').value,
-    openai_api_key: $('#set-openai-key').value,
-    email_enabled: $('#set-email-enabled').checked,
-    email_host: $('#set-email-host').value,
-    email_port: Number($('#set-email-port').value) || 993,
-    email_user: $('#set-email-user').value,
-    email_password: $('#set-email-pass').value,
-    email_poll_minutes: Number($('#set-email-poll').value) || 15,
-    hsa_established: $('#set-hsa-established').value,
-  } }).then(r => { refreshEmailHint(); return r; });
-
-  // Auto-save: radios/checkboxes persist immediately, typing is debounced and quiet —
-  // the "Settings saved" toast comes once, when you leave the field.
-  let saveTimer, statusTimer, announce = false;
-  const autoSave = async () => {
-    const loud = announce;
-    announce = false;
-    try {
-      await saveSettings();
-      showPreHsaSummary();
-      // Toast is visible wherever you are on the page; the header tick is a quiet
-      // secondary cue when you're near the top. (The old header-only indicator was
-      // off-screen when editing the email section at the bottom.)
-      if (loud) toast('Settings saved');
-      const el = $('#save-status');
-      if (el) {
-        el.textContent = ' Saved ✓';
-        clearTimeout(statusTimer);
-        statusTimer = setTimeout(() => { el.textContent = ''; }, 2000);
-      }
-    } catch (err) {
-      toast('Could not save settings: ' + err.message);
-    }
-  };
-  const queueSave = loud => { announce ||= loud; clearTimeout(saveTimer); saveTimer = setTimeout(autoSave, 600); };
-  $$('.settings-form input').forEach(i => {
-    i.addEventListener('input', () => queueSave(false));
-    i.addEventListener('change', () => queueSave(true));
-  });
-
-  $$('.ai-test').forEach(btn => btn.addEventListener('click', async e => {
-    const out = e.target.nextElementSibling;
-    out.className = 'test-result'; out.textContent = 'Saving & testing… (can take ~20s)';
-    e.target.disabled = true;
-    try {
-      await saveSettings(); // test what's on screen, not what was saved earlier
-      const r = await api('/ai/test', { method: 'POST' });
-      out.className = 'test-result ok';
-      out.textContent = r.ok ? `✓ ${r.provider === 'openai-api' ? 'OpenAI' : r.provider === 'anthropic-api' ? 'Claude' : r.provider} is working — settings saved` : 'Unexpected response';
-    } catch (err) {
-      out.className = 'test-result err';
-      out.textContent = '✗ ' + err.message;
-    }
-    e.target.disabled = false;
-  }));
-
+  renderAiSection();
+  renderIntakeSection();
   renderBackupSection();
 
   $('#app-quit')?.addEventListener('click', async () => {
     try { await api('/quit', { method: 'POST' }); } catch { }
     document.body.innerHTML = '<div class="empty" style="padding-top:20vh"><div class="big">👋</div><h2>HSA Tracker is closed.</h2><p class="muted">You can close this tab. Click the HSA Tracker icon whenever you want it back.</p></div>';
   });
-
-  $('#email-check').addEventListener('click', async e => {
-    const out = $('#email-test-result');
-    out.className = 'test-result'; out.textContent = 'Checking…';
-    e.target.disabled = true;
-    try {
-      await saveSettings(); // check with what's on screen, not what was saved earlier
-      const r = await api('/email/check', { method: 'POST' });
-      out.className = 'test-result ok';
-      out.textContent = `✓ Processed ${r.processed} new message${r.processed === 1 ? '' : 's'}${r.skipped ? ` · ${r.skipped} couldn't be read (see below)` : ''}`;
-      pollJobs();
-      if (r.skipped) views.settings(); // re-render so the skipped list shows immediately
-    } catch (err) {
-      out.className = 'test-result err';
-      out.textContent = '✗ ' + err.message;
-    }
-    e.target.disabled = false;
-  });
 };
+
+// ---- Eligibility checks: one key field; the key itself says which service it's for.
+async function renderAiSection(editing = false) {
+  const el = $('#ai-section');
+  if (!el) return;
+  const st = await api('/ai/status');
+  const on = st.provider !== 'keywords';
+  const name = st.provider === 'anthropic-api' ? 'Claude' : 'ChatGPT';
+  const failing = on && st.lastTest && !st.lastTest.ok;
+  const status = !on || editing ? '' : failing
+    ? `<div class="bk-status warn"><div class="dot">!</div><div><div class="t1">AI checking isn't working right now</div>
+        <div class="t2">${esc(st.lastTest.error)} — receipts are checked with keyword matching until it's fixed.</div></div>
+        <button class="btn small" data-ai="edit">Change key</button></div>`
+    : `<div class="bk-status"><div class="dot">✓</div><div><div class="t1">AI checking is on</div>
+        <div class="t2">Using your own ${name} key (…${esc(st.keyEnding)})</div></div>
+        <button class="btn small" data-ai="edit">Change key</button></div>`;
+  const editor = on && !editing ? '' : `
+    <label for="ai-key">API key</label>
+    <div class="key-row"><input type="password" id="ai-key" placeholder="Paste a Claude or ChatGPT key" autocomplete="off" spellcheck="false">
+      <button class="btn primary" data-ai="save">Save</button>${editing ? '<button class="btn ghost" data-ai="cancel">Cancel</button>' : ''}</div>
+    <div class="set-links"><a href="https://console.anthropic.com/settings/keys" target="_blank">Get a Claude key (recommended) ›</a><a href="https://platform.openai.com/api-keys" target="_blank">Get a ChatGPT key ›</a></div>
+    <div class="ai-msg" id="ai-msg" aria-live="polite"></div>
+    <div class="set-hint">AI splits each receipt into items and checks them against IRS rules. Only the receipt's text is sent, using your own key — pennies per receipt.<br>
+      ${on ? '<a href="#" data-ai="off">Turn AI checking off</a> — receipts would be checked with basic keyword matching instead.' : 'No key? Receipts are checked with basic keyword matching — free, but less accurate.'}</div>`;
+  el.innerHTML = `<h3>Eligibility checks</h3>${status}${editor}`;
+
+  const msg = (text, cls = '') => { const m = $('#ai-msg'); if (m) { m.className = 'ai-msg ' + cls; m.textContent = text; } };
+  let busy = false;
+  const submit = async () => {
+    const key = $('#ai-key')?.value.trim();
+    if (!key || busy) return;
+    busy = true;
+    msg('Checking the key…');
+    try {
+      const r = await api('/ai/key', { method: 'POST', body: { key } });
+      toast(`AI checking is on — using your ${r.provider === 'anthropic-api' ? 'Claude' : 'ChatGPT'} key`);
+      renderAiSection();
+    } catch (err) { msg(err.message, 'err'); }
+    busy = false;
+  };
+  el.onclick = actionHandler(async ev => {
+    const act = ev.target.closest('[data-ai]')?.dataset.ai;
+    if (!act) return;
+    if (act === 'edit') return renderAiSection(true);
+    if (act === 'cancel') return renderAiSection();
+    if (act === 'save') return submit();
+    if (act === 'off') {
+      ev.preventDefault();
+      openModal(`<h3>Turn AI checking off?</h3>
+        <p style="font-size:13px;color:var(--ink-2);line-height:1.5">Your key is removed from this Mac, and new receipts are checked with basic keyword matching — free, but less accurate. You can paste a key again any time.</p>
+        <div class="m-actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="m-ai-off">Turn off</button></div>`);
+      $('#m-ai-off').addEventListener('click', async () => {
+        closeModal();
+        await api('/ai/key', { method: 'POST', body: { key: '' } });
+        toast('AI checking is off — receipts are checked with keyword matching');
+        renderAiSection();
+      });
+    }
+  });
+  // Tested the moment it's pasted (or on Enter).
+  $('#ai-key')?.addEventListener('paste', () => setTimeout(submit, 0));
+  $('#ai-key')?.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  if (editing) $('#ai-key')?.focus();
+}
+
+// ---- Getting receipts in: drop or upload, the Inbox folder, the Print menu — and email, tucked away.
+async function renderIntakeSection(showEmail = false) {
+  const el = $('#intake-section');
+  if (!el) return;
+  const [st, s, em] = await Promise.all([api('/intake/status'), api('/settings'), api('/email/status')]);
+  const sw = (key, on, label, disabled = false) => `<button class="switch" role="switch" aria-checked="${on}" aria-label="${label}" data-in-toggle="${key}" ${disabled ? 'disabled' : ''}></button>`;
+  const last = em.lastCheck?.at ? (em.lastCheck.error ? ` · last check failed: ${esc(em.lastCheck.error)}` : ` · last checked ${ago(em.lastCheck.at)}`) : '';
+  const email = showEmail ? `
+    <div class="email-editor">
+      <div class="bk-row">
+        <div><div class="lbl">Check a dedicated email account</div>
+          <div class="sub">Forward receipts to a separate account — for example a new Gmail with an <a href="https://myaccount.google.com/apppasswords" target="_blank">app password</a> — and they're picked up while the app is open.</div></div>
+        <div class="ctl">${sw('email', s.email_enabled, 'Check a dedicated email account')}</div>
+      </div>
+      <div id="email-fields" ${s.email_enabled ? '' : 'hidden'}>
+        <div class="field"><label for="set-email-user">Email address</label><input id="set-email-user" data-email="email_user" value="${esc(s.email_user)}" placeholder="my-hsa-receipts@gmail.com"></div>
+        <div class="field"><label for="set-email-pass">App password</label><input id="set-email-pass" type="password" data-email="email_password" value="${esc(s.email_password)}"></div>
+        <details class="pane-more"><summary>Not using Gmail?</summary>
+          <div class="field"><label for="set-email-host">Mail server (IMAP)</label><input id="set-email-host" data-email="email_host" value="${esc(s.email_host)}"></div>
+          <div class="field"><label for="set-email-port">Port</label><input id="set-email-port" type="number" data-email="email_port" value="${esc(s.email_port)}"></div>
+          <div class="field"><label for="set-email-poll">Check every (minutes)</label><input id="set-email-poll" type="number" data-email="email_poll_minutes" value="${esc(s.email_poll_minutes)}"></div>
+        </details>
+        <button class="btn small" data-in="check">Check inbox now</button><span class="test-result" id="email-test-result"></span>
+        ${em.recentSkipped?.length ? `
+        <div class="skipped-emails">
+          <div class="se-title">Couldn't be read as receipts (${em.recentSkipped.length})</div>
+          <div class="se-note">These emails stayed in your inbox. Forward one again with the receipt attached, or save it to the Inbox folder.</div>
+          ${em.recentSkipped.map(m => `<div class="se-row"><span class="se-subj">${esc(m.subject || '(no subject)')}</span><span class="se-reason">${esc(m.reason)}</span></div>`).join('')}
+        </div>` : ''}
+      </div>
+      <div style="margin-top:10px"><button class="btn small ghost" data-in="email-done">Done</button></div>
+    </div>`
+    : s.email_enabled
+      ? `<div class="bk-row">
+          <div><div class="lbl">Email</div><div class="sub">Checking ${esc(s.email_user)} every ${esc(s.email_poll_minutes)} min${last}
+            <span class="test-result" id="email-test-result"></span></div></div>
+          <div class="ctl"><button class="btn small ghost" data-in="check">Check now</button><button class="btn small ghost" data-in="email">Change</button></div>
+        </div>`
+      : `<div class="set-adv"><a href="#" data-in="email">Use a dedicated email account instead (advanced) ›</a></div>`;
+
+  el.innerHTML = `
+    <h3>Getting receipts in</h3>
+    <div class="bk-row">
+      <div><div class="lbl">Drop files anywhere in this window</div><div class="sub">PDFs, photos, or an email dragged straight from Mail.</div></div>
+      <div class="ctl"><button class="btn small" data-in="upload">${icon('upload')} Upload…</button></div>
+    </div>
+    <div class="bk-row">
+      <div><div class="lbl">HSA Inbox folder</div><div class="sub">${st.inbox.folder
+        ? `Anything saved to <strong>${esc(st.inbox.label)}</strong> is added automatically — from your iPhone too: Share → Save to Files.`
+        : 'Needs iCloud Drive or a backup folder — see Backup below.'}</div></div>
+      <div class="ctl">${st.inbox.folder && st.inbox.enabled ? '<button class="btn small ghost" data-in="reveal">Show in Finder</button>' : ''}${sw('inbox', st.inbox.enabled && !!st.inbox.folder, 'HSA Inbox folder', !st.inbox.folder)}</div>
+    </div>
+    ${st.print.available ? `<div class="bk-row">
+      <div><div class="lbl">Print to HSA Tracker</div><div class="sub">Adds "Save PDF to HSA Tracker" to the Print menu — handy for online orders.</div></div>
+      <div class="ctl">${sw('print', st.print.enabled && st.inbox.enabled, 'Print to HSA Tracker', !st.inbox.enabled || !st.inbox.folder)}</div>
+    </div>` : ''}
+    ${email}`;
+
+  el.onchange = async ev => {
+    const f = ev.target.dataset.email;
+    if (!f) return;
+    const v = ['email_port', 'email_poll_minutes'].includes(f) ? Number(ev.target.value) || undefined : ev.target.value;
+    try {
+      await api('/settings', { method: 'PUT', body: { [f]: v } });
+      toast('Saved');
+      refreshEmailHint();
+    } catch (err) { toastError(err); }
+  };
+  el.onclick = actionHandler(async ev => {
+    const t = ev.target.closest('[data-in-toggle]');
+    if (t) {
+      const on = t.getAttribute('aria-checked') !== 'true';
+      const key = t.dataset.inToggle;
+      if (key === 'email') {
+        await api('/settings', { method: 'PUT', body: { email_enabled: on } });
+        refreshEmailHint();
+        return renderIntakeSection(true);
+      }
+      await api('/intake/settings', { method: 'PUT', body: { [key]: on } });
+      toast(key === 'inbox' ? (on ? 'Inbox folder on' : 'Inbox folder off') : (on ? 'Added to the Print menu' : 'Removed from the Print menu'));
+      return renderIntakeSection(showEmail);
+    }
+    const act = ev.target.closest('[data-in]')?.dataset.in;
+    if (!act) return;
+    ev.preventDefault();
+    if (act === 'upload') $('#file-input').click();
+    if (act === 'reveal') await api('/intake/reveal', { method: 'POST' });
+    if (act === 'email') renderIntakeSection(true);
+    if (act === 'email-done') renderIntakeSection(false);
+    if (act === 'check') {
+      const out = $('#email-test-result');
+      out.className = 'test-result';
+      out.textContent = 'Checking…';
+      try {
+        const r = await api('/email/check', { method: 'POST' });
+        out.className = 'test-result ok';
+        out.textContent = `✓ ${r.processed} new message${r.processed === 1 ? '' : 's'}${r.skipped ? ` · ${r.skipped} couldn't be read` : ''}`;
+        pollJobs();
+        if (r.skipped) renderIntakeSection(true);
+      } catch (err) {
+        out.className = 'test-result err';
+        out.textContent = '✗ ' + err.message;
+      }
+    }
+  });
+}
 
 function backupSectionHtml(st) {
   const line = backupLine(st);
@@ -1804,30 +1832,29 @@ function backupSectionHtml(st) {
         ? `<div class="bk-status none"><div class="dot">…</div><div><div class="t1">Not backed up yet</div><div class="t2">${esc(whereName(st))} › Backups</div></div>
             <button class="btn small" data-bk-act="now">Back up now</button></div>`
         : `<div class="bk-status"><div class="dot">✓</div><div><div class="t1">${esc(line.text.replace('iCloud', 'iCloud Drive'))}</div>
-            <div class="t2">${st.lastCounts ? `${st.lastCounts.expenses} approved expense${st.lastCounts.expenses === 1 ? '' : 's'} · ${st.lastCounts.receipts} receipt${st.lastCounts.receipts === 1 ? '' : 's'} · ` : ''}${esc(whereName(st))} › HSA Tracker${st.changesSince && st.auto ? ' · newer changes are backed up in a few minutes' : ''}</div></div>
+            <div class="t2">${st.lastCounts ? `${st.lastCounts.expenses} approved expense${st.lastCounts.expenses === 1 ? '' : 's'} · ${st.lastCounts.receipts} receipt${st.lastCounts.receipts === 1 ? '' : 's'}` : ''}${st.changesSince && st.auto ? ' · newer changes follow in a few minutes' : ''}</div></div>
             <button class="btn small" data-bk-act="reveal">Show in Finder</button></div>`;
   return `
     <h3>Backup</h3>
-    <div class="s-sub">Keeps a complete copy of your records somewhere safer than this Mac, so a lost or replaced computer never means lost records.</div>
     ${status}
     <div class="bk-row">
-      <div><div class="lbl">Back up automatically</div><div class="sub">A few minutes after you approve, edit or add anything. Keeps the last 30 backups.</div></div>
+      <div><div class="lbl">Back up automatically</div><div class="sub">After every change. Keeps the last 30.</div></div>
       <div class="ctl">${sw('auto', st.auto, 'Back up automatically')}</div>
     </div>
     <div class="bk-row">
-      <div><div class="lbl">Where</div><div class="sub">iCloud Drive syncs to your other Apple devices and survives a new Mac. A Dropbox or Google Drive folder works too.</div></div>
-      <div class="ctl">${st.folder ? `<span class="where" title="${esc(st.folder)}">${st.isICloud ? '☁ iCloud Drive (recommended)' : esc(whereName(st))}</span>` : ''}
+      <div><div class="lbl">Where</div></div>
+      <div class="ctl">${st.folder ? `<span class="where" title="${esc(st.folder)}">${st.isICloud ? '☁ iCloud Drive' : esc(whereName(st))}</span>` : ''}
         ${!st.isICloud && st.icloudAvailable ? '<button class="btn small ghost" data-bk-act="use-icloud">Use iCloud Drive</button>' : ''}
         <button class="btn small ghost" data-bk-act="folder">${st.folder ? 'Change…' : 'Choose a folder…'}</button></div>
     </div>
     <div class="bk-row">
-      <div><div class="lbl">Also keep readable copies</div><div class="sub">Every receipt as an ordinary file named by date and provider, plus the tax summary PDF and a spreadsheet — readable in Finder for decades, even without this app.</div></div>
+      <div><div class="lbl">Also keep readable copies</div><div class="sub">Receipts, tax summary and a spreadsheet you can open without this app.</div></div>
       <div class="ctl">${sw('plain', st.plain, 'Also keep readable copies')}</div>
     </div>
-    <div class="inline-note" style="margin:12px 0 0">Your API key and email app password are <strong>not</strong> included in backups — you'd re-enter them after restoring on a new Mac.</div>
     <div class="bk-foot">
-      <button class="btn primary" data-bk-act="now" ${st.folder ? '' : 'disabled'}>Back up now</button>
+      <button class="btn" data-bk-act="now" ${st.folder ? '' : 'disabled'}>Back up now</button>
       <button class="btn" data-bk-act="restore">Restore from a backup…</button>
+      <span class="set-hint" style="margin:0 0 0 auto">Keys and passwords are never backed up.</span>
     </div>`;
 }
 
