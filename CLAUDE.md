@@ -14,8 +14,8 @@ Local-first Mac desktop app (Electron + Express + Node built-in `node:sqlite`, n
 
 1. Bump `version` in package.json (semver — the in-app update notice compares against GitHub releases)
 2. `npm run installer`
-3. `gh release create vX.Y.Z "dist/HSA Tracker Installer.dmg" --title "HSA Tracker vX.Y.Z" --notes "..."`
-4. Commit + push. Installed apps poll `releases/latest` (hourly cache) and show an update notice.
+3. Commit + push first, so the release tag points at the commit that was built.
+4. `gh release create vX.Y.Z "dist/HSA Tracker Installer.dmg" --target master --title "HSA Tracker vX.Y.Z" --notes "..."` — notes in plain words for a non-technical reader. Installed apps poll `releases/latest` (hourly cache) and show an update notice.
 5. **Deploy the fresh build to this machine's /Applications** (standard step — see command below). The locally-built `.app` was never downloaded through a browser, so it carries no `com.apple.quarantine` flag and opens with no Gatekeeper dialog — unlike the DMG. This is how the owner stays current without the "Apple could not verify" prompt.
 
 Deploy command (used in step 5):
@@ -33,6 +33,8 @@ Deploy command (used in step 5):
 - The frontend is no-build: edits to `public/` are served immediately in dev, but the packaged app bundles them — rebuild + redeploy for /Applications changes.
 
 ## Privacy rules (this repo is PUBLIC)
+
+- **The repo must stay public.** The in-app update check calls the GitHub releases API without auth, and testers download the DMG from the public releases page; a private repo silently breaks both. (It was briefly private in Oct 2026, which stopped update notices.)
 
 - Commits must use the repo-local git identity (already configured: the GitHub noreply email). Never commit with a personal email.
 - Never commit: `data/`, any `*.db`, receipt files, `src/seed-data.json` (legacy), `CLAUDE.local.md`, or anything containing real names of medical providers, order numbers, addresses, or API keys. The .gitignore enforces this — do not weaken it.
