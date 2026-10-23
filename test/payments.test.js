@@ -102,6 +102,37 @@ for (const order of ['invoice first', 'slip first']) {
   });
 }
 
+test('links even when the AI names the practice differently on each document (seen live)', async () => {
+  reset();
+  const original = AI_SLIP.provider;
+  AI_SLIP.provider = 'Smith/Jones/Lee Dentistry'; // no word in common with "Harbor View Dentistry"
+  try {
+    const invoice = addReceipt('invoice.jpeg', INVOICE);
+    const slip = addReceipt('slip.jpeg', SLIP);
+    await triage(slip);
+    await triage(invoice);
+    assert.equal(db.prepare('SELECT payment_for FROM receipts WHERE id = ?').get(slip).payment_for, invoice);
+    assert.equal(liveTotal(), 6127.50);
+  } finally {
+    AI_SLIP.provider = original;
+  }
+});
+
+test('a different practice with the same amount and date is not linked', async () => {
+  reset();
+  const original = AI_SLIP.provider;
+  AI_SLIP.provider = 'Coastal Orthodontics';
+  try {
+    const invoice = addReceipt('invoice.jpeg', INVOICE);
+    const slip = addReceipt('slip.jpeg', SLIP.replace(/Smith\/Jones\/Lee, Harbor View\nDentistry|SMITH LEE DENTAL/g, 'COASTAL ORTHODONTICS'));
+    await triage(invoice);
+    await triage(slip);
+    assert.equal(db.prepare('SELECT payment_for FROM receipts WHERE id = ?').get(slip).payment_for, null);
+  } finally {
+    AI_SLIP.provider = original;
+  }
+});
+
 test('a slip with no matching receipt stays unlinked, waiting', async () => {
   reset();
   const slip = addReceipt('slip.jpeg', SLIP);

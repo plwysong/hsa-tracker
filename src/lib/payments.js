@@ -42,17 +42,21 @@ export function recordDocument(receiptId, triage) {
     triage.document_type === 'payment_only' ? 'payment' : 'itemized', receiptId);
 }
 
-// Provider names vary between an invoice and its card slip ("Harbor View Dentistry"
-// vs "Smith/Jones/Lee, Harbor View Dentistry"), so compare distinctive words.
+// Provider names vary between an invoice and its card slip — and between AI runs:
+// one practice came back as "Harbor View Dentistry" on the invoice and
+// "Smith/Jones/Lee Dentistry" on its slip. So compare distinctive words,
+// and look for each document's provider in the other document's full text too.
 const GENERIC = new Set(['dental', 'dentistry', 'dentist', 'medical', 'clinic', 'center', 'centre', 'group',
   'pharmacy', 'health', 'healthcare', 'care', 'family', 'office', 'associates', 'practice', 'services',
   'store', 'wholesale', 'corp', 'company', 'with', 'from', 'road', 'street', 'suite']);
 const words = p => new Set(String(p || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
   .filter(w => w.length >= 4 && !GENERIC.has(w)));
-export function sameProvider(p, q) {
+export function sameProvider(p, q, pText = '', qText = '') {
   const a = words(p), b = words(q);
   if (!a.size || !b.size) return true; // unknown provider: let amount and date decide
-  for (const w of a) if (b.has(w)) return true;
+  const inB = words(`${q} ${qText}`), inA = words(`${p} ${pText}`);
+  for (const w of a) if (inB.has(w)) return true;
+  for (const w of b) if (inA.has(w)) return true;
   return false;
 }
 
@@ -87,14 +91,14 @@ export function linkPayments(receiptId) {
     // A slip that still carries its own expense would count the payment twice if linked.
     if (db.prepare("SELECT 1 FROM expenses WHERE receipt_id = ? AND status != 'rejected'").get(r.id)) return [];
     const cands = db.prepare(`
-      SELECT r.id, r.provider, ${DATE_SQL} AS date,
+      SELECT r.id, r.provider, r.raw_text, ${DATE_SQL} AS date,
         (SELECT provider FROM expenses e WHERE e.receipt_id = r.id LIMIT 1) AS line_provider
       FROM receipts r
       WHERE r.id != ? AND COALESCE(r.doc_kind, 'itemized') = 'itemized'
         AND ABS(${PAID_SQL} - ?) < 0.005 AND ${near}
         AND NOT EXISTS (SELECT 1 FROM receipts p WHERE p.payment_for = r.id)
     `).all(r.id, r.amount_paid, r.doc_date, r.doc_date)
-      .filter(c => sameProvider(r.provider, c.provider || c.line_provider));
+      .filter(c => sameProvider(r.provider, c.provider || c.line_provider, r.raw_text, c.raw_text));
     const m = bestMatch(cands, r.doc_date);
     if (m) {
       db.prepare('UPDATE receipts SET payment_for = ? WHERE id = ?').run(m.id, r.id);
@@ -106,12 +110,12 @@ export function linkPayments(receiptId) {
     if (!paid?.paid) return [];
     const provider = r.provider || db.prepare('SELECT provider FROM expenses WHERE receipt_id = ? LIMIT 1').get(r.id)?.provider;
     const cands = db.prepare(`
-      SELECT r.id, r.provider, ${DATE_SQL} AS date FROM receipts r
+      SELECT r.id, r.provider, r.raw_text, ${DATE_SQL} AS date FROM receipts r
       WHERE r.doc_kind = 'payment' AND r.payment_for IS NULL AND COALESCE(r.payment_unlinked, 0) = 0
         AND ABS(r.amount_paid - ?) < 0.005 AND ${near}
         AND NOT EXISTS (SELECT 1 FROM expenses e WHERE e.receipt_id = r.id AND e.status != 'rejected')
     `).all(paid.paid, paid.date, paid.date)
-      .filter(c => sameProvider(provider, c.provider));
+      .filter(c => sameProvider(provider, c.provider, r.raw_text, c.raw_text));
     const m = bestMatch(cands, paid.date);
     if (m) {
       db.prepare('UPDATE receipts SET payment_for = ? WHERE id = ?').run(r.id, m.id);
