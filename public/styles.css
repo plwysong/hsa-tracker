@@ -276,6 +276,8 @@ tfoot td { font-weight: 700; border-top: 1px solid var(--baseline); }
 
 /* Jobs panel */
 .jobs { position: fixed; right: 18px; bottom: 18px; z-index: 90; width: 320px; display: flex; flex-direction: column; gap: 8px; }
+/* Keep progress cards clear of the side panel's buttons while it's docked. */
+@media (min-width: 1081px) { .layout.panel-open ~ .jobs { right: 458px; } }
 .job { padding: 10px 14px; font-size: 12.5px; display: flex; gap: 10px; align-items: center; }
 .job .spin {
   width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
@@ -431,6 +433,21 @@ pre.rawtext {
 }
 .layout.panel-open .col-extra { display: none; }
 tr.row-click { cursor: pointer; }
+.item.row-click { cursor: pointer; padding: 10px 16px; align-items: center; }
+.item.row-click:hover { background: color-mix(in srgb, var(--ink) 2.5%, transparent); }
+.item.row-selected { background: color-mix(in srgb, var(--accent) 9%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+/* Review panel: fields to check against the receipt */
+.pane-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.pane-fields .field { margin: 0; min-width: 0; }
+.pane-fields .full { grid-column: 1 / -1; }
+.pane-fields label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 650; margin-bottom: 3px; }
+.pane-fields input, .pane-fields select, .pane-fields textarea { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; }
+.pane-more { margin-top: 8px; }
+.pane-more summary { font-size: 12.5px; color: var(--accent); cursor: pointer; margin-bottom: 8px; }
+.pane-save { font-size: 12px; min-height: 16px; margin-top: 6px; }
+.pane-save.ok { color: var(--good-text); }
+.pane-save.err { color: var(--critical); }
+.drawer-foot .rp-next { margin-left: auto; }
 .row-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 tr.row-selected td { background: color-mix(in srgb, var(--accent) 9%, transparent) !important; }
 @media (max-width: 1080px) {

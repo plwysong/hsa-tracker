@@ -490,6 +490,8 @@ views.dashboard = async function () {
 // ---------------- Review queue ----------------
 const reviewFilters = { confidence: '', category: '', source: '', q: '' };
 const selected = new Set();
+let reviewShow = null;  // opens an item in the review panel; set by each render of the queue
+let reviewNext = null;  // item to open once the queue has re-rendered after a decision
 
 views.review = async function () {
   main.innerHTML = '<div class="empty">Loading…</div>';
@@ -512,6 +514,8 @@ views.review = async function () {
   }
 
   const total = items.reduce((s, e) => s + e.amount, 0);
+  // Items in on-screen order, so a decision can move straight on to the next one.
+  const order = [...groups.values()].flat();
 
   main.innerHTML = `
     <div class="page-head">
@@ -587,29 +591,30 @@ views.review = async function () {
     }
   };
 
+  // Clicking an item (or Enter on it) opens it beside the queue; clicking it again closes it.
+  const rowFor = id => main.querySelector(`.item[data-id="${id}"]`);
+  reviewShow = id => {
+    const e = order.find(x => x.id === id);
+    $$('.item.row-selected').forEach(r => r.classList.remove('row-selected'));
+    if (!e) { closePane(); return; }
+    rowFor(id)?.classList.add('row-selected');
+    const list = groups.get([...groups.keys()].find(k => groups.get(k).includes(e)));
+    openReviewPane(e, settings, { list, order, rowFor });
+  };
+  main.onkeydown = ev => {
+    const row = ev.target.closest?.('.item[data-id]');
+    if (row && ev.target === row && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); row.click(); }
+  };
+
   main.onclick = actionHandler(async e => {
+    const row = e.target.closest('.item[data-id]');
+    if (row && !e.target.closest('input, button, a')) {
+      const id = Number(row.dataset.id);
+      if (paneKey === 'review:' + id) closePane(); else reviewShow(id);
+      return;
+    }
     const btn = e.target.closest('button');
     if (!btn) return;
-    const id = Number(btn.dataset.id);
-    if (btn.dataset.act === 'approve') {
-      const c = await approveGuarded(o => api(`/expenses/${id}/approve`, { method: 'POST', body: o }), { rejectId: id });
-      if (c !== false) toast(approvedToast(c));
-      views.review();
-    }
-    if (btn.dataset.act === 'reject') { await api(`/expenses/${id}/reject`, { method: 'POST' }); toast('Rejected (kept in records)'); views.review(); }
-    if (btn.dataset.act === 'edit') {
-      const item = items.find(x => x.id === id);
-      editExpenseModal(item, settings, async patch => {
-        await api(`/expenses/${id}`, { method: 'PATCH', body: patch });
-        toast('Saved');
-        views.review();
-      }, { showApprove: true, onApprove: async patch => {
-        await api(`/expenses/${id}`, { method: 'PATCH', body: patch });
-        const c = await approveGuarded(o => api(`/expenses/${id}/approve`, { method: 'POST', body: o }), { rejectId: id });
-        toast(c === false ? 'Saved' : approvedToast(c, 'Saved & approved'));
-        views.review();
-      } });
-    }
     if (btn.dataset.act === 'view-receipt') window.open(`/api/receipts/${btn.dataset.rid}/file`, '_blank');
     if (btn.dataset.act === 'record-payment') {
       await api(`/receipts/${btn.dataset.rid}/record-payment`, { method: 'POST' });
@@ -636,6 +641,16 @@ views.review = async function () {
       updateBulkbar(items);
     }
   });
+
+  // Keep the panel in step with the queue: open the item a decision moved on to, or
+  // refresh the open one — unless someone is typing in it (a background re-render
+  // mustn't wipe an edit in progress).
+  const want = reviewNext ?? (paneKey?.startsWith('review:') ? Number(paneKey.slice(7)) : null);
+  reviewNext = null;
+  if (want != null) {
+    const typing = paneKey === 'review:' + want && $('#detail-pane').contains(document.activeElement) && document.activeElement.matches('input, select, textarea');
+    if (typing) rowFor(want)?.classList.add('row-selected'); else reviewShow(want);
+  }
 
   function updateBulkbar(items) {
     const bar = $('#bulkbar');
@@ -675,29 +690,17 @@ function renderGroup(key, list, settings, rc) {
     ${unchecked ? `<div class="g-fact warn">AI didn't check ${unchecked === list.length ? (list.length === 1 ? 'this item' : 'these items') : `${unchecked} of these items`} — only keyword matching did. Compare ${unchecked === 1 ? 'it' : 'them'} with the receipt before approving.</div>` : ''}
     ${receiptFactsHtml(rc)}
     ${list.map(e => `
-      <div class="item">
+      <div class="item row-click" data-id="${e.id}" tabindex="0" aria-label="${esc(e.description)}, ${money(e.amount)}">
         <input type="checkbox" data-id="${e.id}" aria-label="Select ${esc(e.description)}">
         <div class="body">
           <div class="desc">${esc(e.description)}</div>
           <div class="meta">
-            <span>${fmtDate(e.date)}</span>·<span>${esc(e.provider)}</span>
-            ${preHsaChip(e, settings)}${dupChip(e)}
+            <span>${fmtDate(e.date)}</span>·
             <span class="chip cat">${esc(e.category)}</span>
-            ${confChip(e)}
-            <span class="chip src">${esc(e.source_type)}</span>
-            ${e.order_ref ? `<span class="muted mono">${esc(e.order_ref)}</span>` : ''}
-          </div>
-          <div class="rationale">${esc(e.rationale)}</div>
-          ${e.duplicates?.length ? `<div class="dup-note">Possible duplicate of: ${e.duplicates.map(dupLine).join('; ')}</div>` : ''}
-        </div>
-        <div style="text-align:right">
-          <div class="amount">${money(e.amount)}</div>
-          <div class="i-actions" style="margin-top:8px">
-            <button class="btn small good" data-act="approve" data-id="${e.id}" title="Approve" aria-label="Approve">${icon('check')}</button>
-            <button class="btn small" data-act="edit" data-id="${e.id}">Edit</button>
-            <button class="btn small danger" data-act="reject" data-id="${e.id}" title="Reject (kept for audit)" aria-label="Reject">${icon('x')}</button>
+            ${confChip(e)}${preHsaChip(e, settings)}${dupChip(e)}
           </div>
         </div>
+        <div class="amount">${money(e.amount)}</div>
       </div>`).join('')}
   </div>`;
 }
@@ -857,6 +860,139 @@ function openExpensePane(e, settings, refresh) {
             refresh(e.id);
           });
         }
+      }
+    });
+  });
+}
+
+// ---------------- Review panel ----------------
+// The Review queue's inspector: the receipt on top, the fields to check against it
+// (saved as you leave each one), and Approve / Reject, which move on to the next item.
+function reviewPaneHtml(e, settings, { list, next }) {
+  const pos = list.length > 1 ? ` · item ${list.indexOf(e) + 1} of ${list.length} on this receipt` : '';
+  const field = (id, label, input, cls = '') => `<div class="field ${cls}"><label for="${id}">${label}</label>${input}</div>`;
+  const text = (id, key, attrs = '') => `<input id="${id}" data-field="${key}" value="${esc(e[key] ?? '')}" ${attrs}>`;
+  return `
+  <div class="drawer-head">
+    <div>
+      <h2 id="rp-title">${esc(e.description)}</h2>
+      <div class="drawer-amount"><span id="rp-amount">${money(e.amount)}</span> <span class="chip status-pending_review" style="vertical-align:3px">pending review</span></div>
+      <div class="drawer-sub">${esc(e.provider || '—')} · ${fmtDate(e.date)}${pos}</div>
+    </div>
+    <button class="btn small ghost drawer-close" title="Close" aria-label="Close">${icon('x')}</button>
+  </div>
+  <div class="drawer-body">
+    ${e.receipt_id ? receiptViewer(e.receipt_id, e.receipt_mime, 'Receipt') : '<p class="inline-note" style="margin:0">No receipt file attached to this item.</p>'}
+    ${e.duplicates?.length ? `<div class="pre-hsa-note dup">
+      <strong>Possible duplicate.</strong> Same date, amount and provider as:
+      ${e.duplicates.map(d => `<div style="margin-top:4px">${dupLine(d)}</div>`).join('')}
+      <div style="margin-top:6px">If it's the same purchase, reject this one so it isn't counted twice.</div>
+      <div style="margin-top:8px"><button class="btn small" data-rp-act="not-dup">Not a duplicate</button></div></div>` : ''}
+    ${beforeEstablished(e, settings) ? `<div class="pre-hsa-note">Dated before your HSA was established (${fmtDate(settings.hsa_established)}). The IRS only counts expenses from after that date — if you approve it, you'll choose whether to keep it as a record or count it.</div>` : ''}
+
+    <div class="drawer-section-title">Check against the receipt</div>
+    <div class="pane-fields">
+      ${field('rp-date', 'Date', text('rp-date', 'date', 'type="date"'))}
+      ${field('rp-amount-in', 'Amount ($)', text('rp-amount-in', 'amount', 'type="number" step="0.01" min="0"'))}
+      ${field('rp-desc', 'Description', text('rp-desc', 'description'), 'full')}
+      ${field('rp-provider', 'Provider', text('rp-provider', 'provider'))}
+      ${field('rp-cat', 'Category', `<select id="rp-cat" data-field="category">${(settings.categories || []).map(c => `<option ${e.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>`)}
+    </div>
+    <details class="pane-more">
+      <summary>More fields (payment method, order ref, notes)</summary>
+      <div class="pane-fields">
+        ${field('rp-pay', 'Payment method', text('rp-pay', 'payment_method'))}
+        ${field('rp-order', 'Order / receipt ref', text('rp-order', 'order_ref'))}
+        ${field('rp-notes', 'Notes', `<textarea id="rp-notes" data-field="notes" rows="2">${esc(e.notes || '')}</textarea>`, 'full')}
+      </div>
+    </details>
+    <div class="pane-save" id="rp-save" aria-live="polite"></div>
+
+    ${e.rationale ? `<div class="drawer-section-title">Why it's eligible</div><div class="drawer-rationale">${esc(e.rationale)} ${confChip(e)}</div>` : ''}
+  </div>
+  <div class="drawer-foot">
+    <button class="btn good" data-rp-act="approve">${icon('check')} Approve</button>
+    <button class="btn danger" data-rp-act="reject" title="Kept in your records for audit">${icon('x')} Reject</button>
+    ${next ? `<button class="btn ghost small rp-next" data-rp-act="skip" title="Leave this one for later">Next: ${esc(next.description.length > 28 ? next.description.slice(0, 27) + '…' : next.description)} ${icon('arrowRight')}</button>` : ''}
+  </div>`;
+}
+
+function openReviewPane(e, settings, { list, order, rowFor }) {
+  const idx = order.indexOf(e);
+  // After a decision this item leaves the queue: go to the one after it, else the first left.
+  const next = order.slice(idx + 1)[0] || order.find(x => x !== e) || null;
+  openPane('review:' + e.id, reviewPaneHtml(e, settings, { list, next }), pane => {
+    const status = pane.querySelector('#rp-save');
+    let saving = Promise.resolve(true);
+
+    // Each field saves when you leave it, like Settings — no Save button to forget.
+    const save = async input => {
+      const key = input.dataset.field;
+      let value = input.value;
+      if (key === 'amount') value = Number(value);
+      if ((key === 'amount' && !(value > 0)) || ((key === 'date' || key === 'description') && !String(value).trim())) {
+        status.className = 'pane-save err';
+        status.textContent = key === 'amount' ? 'Amount must be more than $0.' : `${key === 'date' ? 'Date' : 'Description'} is required.`;
+        return false;
+      }
+      if (String(value) === String(e[key] ?? '')) return true;
+      try {
+        await api(`/expenses/${e.id}`, { method: 'PATCH', body: { [key]: value } });
+      } catch (err) {
+        status.className = 'pane-save err';
+        status.textContent = err.message;
+        return false;
+      }
+      e[key] = value;
+      status.className = 'pane-save ok';
+      status.textContent = 'Saved ✓';
+      // Keep the heading and the queue row in step without re-rendering (that would steal focus).
+      if (key === 'description') { pane.querySelector('#rp-title').textContent = value; rowFor(e.id)?.querySelector('.desc')?.replaceChildren(value); }
+      if (key === 'amount') { pane.querySelector('#rp-amount').textContent = money(value); rowFor(e.id)?.querySelector('.amount')?.replaceChildren(money(value)); }
+      return true;
+    };
+    pane.onchange = ev => {
+      if (!ev.target.dataset.field) return;
+      saving = saving.then(() => save(ev.target));
+    };
+    // Escape in a field leaves the field (which saves it); a second Escape closes the panel.
+    pane.onkeydown = ev => {
+      if (ev.key === 'Escape' && ev.target.dataset?.field) { ev.stopPropagation(); ev.target.blur(); }
+    };
+
+    const moveOn = async () => { reviewNext = next?.id ?? null; await views.review(); refreshBadge(); };
+    pane.onclick = actionHandler(async ev => {
+      const file = ev.target.closest('[data-open-file]');
+      if (file) { window.open(`/api/receipts/${file.dataset.openFile}/file`, '_blank'); return; }
+      const act = ev.target.closest('[data-rp-act]')?.dataset.rpAct;
+      if (!act) return;
+      if (act === 'skip') { reviewShow(next.id); return; }
+      if (act === 'not-dup') {
+        await api(`/expenses/${e.id}/not-duplicate`, { method: 'POST' });
+        toast("Marked not a duplicate — it won't ask again");
+        reviewNext = e.id;
+        await views.review();
+        return;
+      }
+      if (act === 'reject') {
+        await api(`/expenses/${e.id}/reject`, { method: 'POST' });
+        toast('Rejected (kept in records)');
+        await moveOn();
+        return;
+      }
+      if (act === 'approve') {
+        // Finish any save in progress (and the field being edited) before approving.
+        const active = pane.contains(document.activeElement) && document.activeElement.dataset.field ? document.activeElement : null;
+        if (active) saving = saving.then(() => save(active));
+        if (!(await saving)) return;
+        const c = await approveGuarded(o => api(`/expenses/${e.id}/approve`, { method: 'POST', body: o }), { rejectId: e.id });
+        if (c === false) {
+          // Cancelled stays here; "Reject this one" from the duplicate question moves on.
+          if ((await api(`/expenses/${e.id}`)).status === 'rejected') await moveOn();
+          return;
+        }
+        toast(approvedToast(c));
+        await moveOn();
       }
     });
   });
@@ -1646,7 +1782,7 @@ function closeModal() {
 }
 $('#modal-backdrop').addEventListener('click', e => { if (e.target.id === 'modal-backdrop') closeModal(); });
 
-function editExpenseModal(item, settings, onSave, { showApprove = false, onApprove } = {}) {
+function editExpenseModal(item, settings, onSave) {
   const isNew = !item;
   openModal(`
     <h3>${isNew ? 'Add expense' : 'Edit expense'}</h3>
@@ -1666,7 +1802,6 @@ function editExpenseModal(item, settings, onSave, { showApprove = false, onAppro
     <div class="field"><label for="m-notes">Notes</label><textarea id="m-notes" rows="2" style="width:100%">${esc(item?.notes || '')}</textarea></div>
     <div class="m-actions">
       <button class="btn" data-close>Cancel</button>
-      ${showApprove ? '<button class="btn good" id="m-save-approve">Save &amp; approve</button>' : ''}
       <button class="btn primary" id="m-save">${isNew ? 'Add to ledger' : 'Save'}</button>
     </div>`);
 
@@ -1692,12 +1827,6 @@ function editExpenseModal(item, settings, onSave, { showApprove = false, onAppro
     if (!validate(b)) return;
     closeModal();
     await onSave(b);
-  });
-  $('#m-save-approve')?.addEventListener('click', async () => {
-    const b = collect();
-    if (!validate(b)) return;
-    closeModal();
-    await onApprove(b);
   });
 }
 
