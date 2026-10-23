@@ -1,6 +1,6 @@
 {
   "name": "hsa-tracker",
-  "version": "1.8.1",
+  "version": "1.9.0",
   "description": "Local-first HSA eligible expense tracker with AI receipt triage",
   "type": "module",
   "main": "electron.js",

@@ -8,7 +8,7 @@ import { linkPayments } from '../lib/payments.js';
 import { isSupported } from '../lib/extract.js';
 import { testProvider } from '../lib/triage.js';
 import { checkEmailNow, emailStatus, restartEmailPolling } from '../lib/email.js';
-import { ledgerCsv, fullJson, fullZip, receiptsZip, summaryPdfBuffer } from '../lib/exporter.js';
+import { ledgerCsv, fullJson, fullZip, receiptsZip, allReceiptsZip, summaryPdfBuffer } from '../lib/exporter.js';
 
 export const api = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -113,9 +113,20 @@ api.get('/stats', wrap((req, res) => {
   `).all();
   const receipts_count = db.prepare('SELECT COUNT(*) AS n FROM receipts').get().n;
   const discarded_count = db.prepare('SELECT COUNT(*) AS n FROM discarded').get().n;
+  // Documents waiting on the user besides line items: ones that produced nothing (not still
+  // being read) and card slips not yet linked. Review's badge counts them too.
+  const busy = new Set(listJobs().filter(j => ['queued', 'extracting', 'triaging'].includes(j.status)).map(j => j.receiptId));
+  const attention_count = db.prepare(`
+    SELECT r.id FROM receipts r
+    WHERE COALESCE(r.doc_kind, '') != 'payment' AND COALESCE(r.attention_dismissed, 0) = 0
+      AND NOT EXISTS (SELECT 1 FROM expenses e WHERE e.receipt_id = r.id)
+      AND NOT EXISTS (SELECT 1 FROM discarded d WHERE d.receipt_id = r.id)`).all().filter(r => !busy.has(r.id)).length;
+  const waiting_payment_count = db.prepare(`
+    SELECT COUNT(*) AS n FROM receipts r WHERE r.doc_kind = 'payment' AND r.payment_for IS NULL
+      AND NOT EXISTS (SELECT 1 FROM expenses e WHERE e.receipt_id = r.id)`).get().n;
   res.json({
     ...totals,
-    receipts_count, discarded_count,
+    receipts_count, discarded_count, attention_count, waiting_payment_count,
     byCategory, byYear, byMonth, recent,
   });
 }));
@@ -397,7 +408,7 @@ api.post('/jobs/clear', wrap((req, res) => { clearFinishedJobs(req.body || {}); 
 api.get('/receipts', wrap((req, res) => {
   const rows = db.prepare(`
     SELECT r.id, r.filename, r.original_name, r.mime, r.source, r.received_at, r.meta,
-      r.doc_kind, r.doc_date, r.provider, r.amount_paid, r.discounts, r.payment_ref, r.payment_for, r.payment_unlinked,
+      r.doc_kind, r.doc_date, r.provider, r.amount_paid, r.discounts, r.payment_ref, r.payment_for, r.payment_unlinked, r.attention_dismissed,
       (length(trim(r.raw_text)) >= 10) AS has_text,
       ROUND((SELECT COALESCE(SUM(amount), 0) FROM expenses e WHERE e.receipt_id = r.id AND e.status != 'rejected')
         + (SELECT COALESCE(SUM(amount), 0) FROM discarded d WHERE d.receipt_id = r.id), 2) AS lines_total,
@@ -499,6 +510,13 @@ api.post('/receipts/:id/unlink', wrap((req, res) => {
 }));
 
 // No itemized receipt will ever come: record the payment itself as one expense.
+api.post('/receipts/:id/dismiss', wrap((req, res) => {
+  const r = db.prepare('UPDATE receipts SET attention_dismissed = 1 WHERE id = ?').run(req.params.id);
+  if (!r.changes) return res.status(404).json({ error: 'Receipt not found' });
+  audit('receipt_dismissed', { receiptId: Number(req.params.id) });
+  res.json({ ok: true });
+}));
+
 api.post('/receipts/:id/record-payment', wrap((req, res) => {
   const p = paymentDoc(req.params.id);
   if (!p) return res.status(404).json({ error: 'Not a proof-of-payment document' });
@@ -620,6 +638,11 @@ api.get('/export/csv', wrap((req, res) => {
 }));
 
 api.get('/export/receipts', wrap(async (req, res) => {
+  if (req.query.all === '1') {
+    res.type('application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="HSA-all-receipts.zip"');
+    return allReceiptsZip(res);
+  }
   const ids = String(req.query.ids || '').split(',').map(Number).filter(Number.isFinite);
   if (!ids.length) return res.status(400).json({ error: 'ids required' });
   res.type('application/zip');

@@ -49,6 +49,18 @@ function receiptZipPaths(receiptIds = null) {
     .map(r => ({ file: r.filename, zipPath: folderOf.has(r.id) ? `${folderOf.get(r.id)}/${r.filename}` : r.filename }));
 }
 
+/** Streams a zip of every receipt file (including any that produced no expense), with the full records CSV. */
+export function allReceiptsZip(res) {
+  const archive = archiver('zip', { zlib: { level: 9 } });
+  archive.pipe(res);
+  archive.append(ledgerCsv({ approvedOnly: false }), { name: 'HSA-all-records.csv' });
+  for (const { file, zipPath } of receiptZipPaths()) {
+    const p = path.join(RECEIPTS_DIR, file);
+    if (existsSync(p)) archive.file(p, { name: zipPath });
+  }
+  return archive.finalize();
+}
+
 /** Streams a zip containing just the receipt files behind the given expense ids. */
 export function receiptsZip(ids, res) {
   const receiptIds = [...new Set(allExpenses(null, ids).map(e => e.receipt_id).filter(Boolean))];

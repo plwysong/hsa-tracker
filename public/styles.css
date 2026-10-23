@@ -345,16 +345,9 @@ tfoot td { font-weight: 700; border-top: 1px solid var(--baseline); }
 .warn-text { color: color-mix(in srgb, var(--warning) 55%, var(--ink)); }
 .bad-text { color: var(--critical); }
 
-/* Expenses / Receipts switch on the Ledger */
-.seg { display: inline-flex; background: color-mix(in srgb, var(--ink) 7%, transparent); border-radius: 9px; padding: 3px; }
-.seg button { border: none; background: none; padding: 6px 14px; border-radius: 7px; font-size: 13px; font-weight: 500; color: var(--ink-2); }
-.seg button.on { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.10); }
 
-/* Receipt inspector */
+/* Detail pane sub-heading */
 .drawer-sub { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
-.rc-item { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--grid); font-size: 13px; }
-.rc-item:last-of-type { border-bottom: none; }
-.rc-item .num { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .menu-wrap { position: relative; }
 .menu {
   position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 5; min-width: 180px;
@@ -452,6 +445,8 @@ tr.row-click { cursor: pointer; }
 .pane-save.ok { color: var(--good-text); }
 .pane-save.err { color: var(--critical); }
 .drawer-foot .rp-next { margin-left: auto; }
+.rc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rc-head .btn { text-transform: none; letter-spacing: 0; }
 .row-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 tr.row-selected td { background: color-mix(in srgb, var(--accent) 9%, transparent) !important; }
 @media (max-width: 1080px) {

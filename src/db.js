@@ -202,3 +202,6 @@ addColumn('receipts', 'discounts', 'REAL');
 addColumn('receipts', 'payment_ref', 'TEXT');
 addColumn('receipts', 'payment_for', 'INTEGER');
 addColumn('receipts', 'payment_unlinked', 'INTEGER DEFAULT 0'); // user unlinked it: never auto-link again
+// Migration: a document that produced nothing, which the user looked at and said has nothing to add —
+// it stops asking for attention in Review (the file is kept, and is in every backup).
+addColumn('receipts', 'attention_dismissed', 'INTEGER DEFAULT 0');
