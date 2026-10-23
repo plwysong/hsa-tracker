@@ -332,10 +332,6 @@ tfoot td { font-weight: 700; border-top: 1px solid var(--baseline); }
 .test-result.ok { color: var(--good-text); } .test-result.err { color: var(--critical); }
 
 /* ---------- Export ---------- */
-.export-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
-.export-card { padding: 18px 20px; }
-.export-card h3 { margin: 0 0 5px; font-size: 14px; }
-.export-card p { color: var(--ink-2); font-size: 12.5px; margin: 0 0 13px; }
 
 /* ---------- Misc ---------- */
 .empty { text-align: center; color: var(--muted); padding: 44px 20px; }
@@ -366,6 +362,12 @@ tfoot td { font-weight: 700; border-top: 1px solid var(--baseline); }
 .menu button { border: none; background: none; text-align: left; padding: 8px 10px; border-radius: 7px; font-size: 13px; color: var(--ink); display: flex; align-items: center; gap: 8px; }
 .menu button:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .menu button.danger { color: var(--critical); }
+.menu.down { bottom: auto; top: calc(100% + 6px); z-index: 20; }
+.menu a { display: flex; align-items: flex-start; gap: 9px; padding: 8px 10px; border-radius: 7px; font-size: 13px; color: var(--ink); text-decoration: none; }
+.menu a:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.menu a .bicon { margin-top: 2px; flex-shrink: 0; }
+.menu a small { display: block; font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+.export-menu { min-width: 260px; }
 .section-gap { margin-top: 22px; }
 .toast {
   position: fixed; left: 50%; transform: translateX(-50%); bottom: 22px; z-index: 120;
@@ -429,6 +431,7 @@ pre.rawtext {
 }
 .layout.panel-open .col-extra { display: none; }
 tr.row-click { cursor: pointer; }
+.row-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 tr.row-selected td { background: color-mix(in srgb, var(--accent) 9%, transparent) !important; }
 @media (max-width: 1080px) {
   .detail-pane { position: fixed; right: 0; top: 0; bottom: 0; z-index: 71; box-shadow: -8px 0 32px rgba(0,0,0,.18); height: auto; }

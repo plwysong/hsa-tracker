@@ -216,13 +216,20 @@ function receiptFactsHtml(rc) {
   return out.join('');
 }
 
+// What a person would call a receipt — who it's from, when, how much — rather
+// than its filename (often just IMG_0066.jpeg). Older receipts fall back to their lines.
+const receiptProvider = r => r.provider || r.items_provider || '';
+const receiptDate = r => r.doc_date || r.items_date || null;
+const receiptAmount = r => r.amount_paid ?? r.items_total ?? null;
+const receiptLabel = r => r && [receiptProvider(r) || r.original_name || r.filename, receiptDate(r) && fmtDate(receiptDate(r))].filter(Boolean).join(' · ');
+
 /** Itemized receipts a waiting payment could belong to, nearest date first. */
 function linkOptions(p, receipts) {
   const when = p.doc_date || p.received_at;
   const dist = r => Math.abs(new Date(r.doc_date || r.received_at) - new Date(when)) || 0;
   return receipts.filter(r => r.doc_kind !== 'payment' && r.expense_count)
     .sort((a, b) => dist(a) - dist(b)).slice(0, 12)
-    .map(r => `<option value="${r.id}">${fmtDate(r.doc_date || r.received_at)} · ${esc(r.provider || r.original_name || r.filename)} · ${money(r.amount_paid ?? r.lines_total)}</option>`).join('');
+    .map(r => `<option value="${r.id}">${fmtDate(r.doc_date || r.received_at)} · ${esc(receiptProvider(r) || r.original_name || r.filename)} · ${money(receiptAmount(r) ?? r.lines_total)}</option>`).join('');
 }
 
 function waitingPaymentsHtml(waiting, receipts) {
@@ -648,15 +655,18 @@ function renderGroup(key, list, settings, rc) {
   const unchecked = list.filter(notAiChecked).length;
   // Approving a whole receipt at once is only the obvious move when AI was sure of every line.
   const cautious = unchecked || list.some(e => e.confidence !== 'High');
+  const fileName = first.receipt_id ? (first.receipt_original_name || first.receipt_filename || `Receipt #${first.receipt_id}`) : '';
+  const who = (rc && receiptProvider(rc)) || first.provider;
+  const when = (rc && receiptDate(rc)) || first.date;
   const title = first.receipt_id
-    ? (first.receipt_original_name || first.receipt_filename || `Receipt #${first.receipt_id}`)
+    ? (who && who !== 'Unknown' ? `${who} · ${fmtDate(when)}` : fileName)
     : (first.order_ref ? `${first.provider} — order ${first.order_ref}` : first.provider || 'Ungrouped');
   return `
   <div class="card group">
     <div class="group-head">
       <span class="g-title">${esc(title)}</span>
       <span class="g-meta">${list.length} item${list.length === 1 ? '' : 's'} · ${money(sum)}</span>
-      ${first.receipt_id ? `<button class="btn small ghost" data-act="view-receipt" data-rid="${first.receipt_id}">View receipt</button>` : ''}
+      ${first.receipt_id ? `<button class="btn small ghost" data-act="view-receipt" data-rid="${first.receipt_id}" title="${esc(fileName)}">View receipt</button>` : ''}
       <span class="g-actions">
         <button class="btn small ${cautious ? '' : 'good'}" data-group-act="approve" data-ids='${ids}'>${icon('check')} Approve all</button>
         <button class="btn small" data-group-act="reject" data-ids='${ids}'>${icon('x')} Reject all</button>
@@ -715,8 +725,13 @@ function closePane() {
   $$('.row-selected').forEach(r => r.classList.remove('row-selected'));
 }
 
-// Escape closes the topmost thing: an open dialog first, then the detail pane.
-document.addEventListener('keydown', e => { if (e.key === 'Escape') modalOpen() ? closeModal() : closePane(); });
+// Escape closes the topmost thing: an open menu, then a dialog, then the detail pane.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const menu = document.querySelector('.menu:not([hidden])');
+  if (menu) { menu.hidden = true; menu.parentElement.querySelector('[aria-expanded]')?.setAttribute('aria-expanded', 'false'); return; }
+  modalOpen() ? closeModal() : closePane();
+});
 
 function expensePaneHtml(e, settings) {
   return `
@@ -871,6 +886,9 @@ views.ledger = async function () {
       notApprovedSum && `Not approved ${money(notApprovedSum)}`].filter(Boolean).join(' · ') + ` · Total ${money(total)}`
     : `Total: ${money(total)}`;
 
+  // Every row says "approved" when that's the filter — skip the column and give the space to descriptions.
+  const showStatus = ledgerFilters.status !== 'approved';
+
   main.innerHTML = `
     <div class="page-head">
       <div>
@@ -879,6 +897,7 @@ views.ledger = async function () {
       </div>
       <div class="actions">
         ${ledgerSwitch('ledger')}
+        ${exportMenu()}
         <button class="btn primary" id="lg-add">${icon('plus')} Add expense</button>
       </div>
     </div>
@@ -914,18 +933,18 @@ views.ledger = async function () {
       <thead><tr>
         <th style="width:26px"><input type="checkbox" id="lg-all" title="Select all" aria-label="Select all"></th>
         <th data-sort="date">Date</th><th class="col-extra" data-sort="provider">Provider</th><th data-sort="description">Description</th><th class="col-extra" data-sort="category">Category</th>
-        <th class="num" data-sort="amount" data-type="num">Amount</th><th data-sort="status">Status</th><th class="col-extra" data-sort="reimbursed">Reimbursed</th>
+        <th class="num" data-sort="amount" data-type="num">Amount</th>${showStatus ? '<th data-sort="status">Status</th>' : ''}<th class="col-extra" data-sort="reimbursed">Reimbursed</th>
       </tr></thead>
       <tbody>
         ${rows.map(e => `
         <tr class="row-click ${paneKey === 'expense:' + e.id ? 'row-selected' : ''}" data-id="${e.id}">
           <td><input type="checkbox" class="lg-check" data-id="${e.id}" aria-label="Select ${esc(e.description)}" ${ledgerSelected.has(e.id) ? 'checked' : ''}></td>
-          <td style="white-space:nowrap" data-v="${esc(e.date)}">${fmtDate(e.date)}${beforeEstablished(e, settings) ? ` ${preHsaChip(e, settings)}` : ''}${e.duplicates?.length ? ` ${dupChip(e)}` : ''}</td>
+          <td style="white-space:nowrap" data-v="${esc(e.date)}">${fmtDate(e.date)}</td>
           <td class="col-extra">${esc(e.provider)}</td>
-          <td>${esc(e.description)}</td>
+          <td>${esc(e.description)}${beforeEstablished(e, settings) || e.duplicates?.length ? `<div class="row-chips">${preHsaChip(e, settings)}${dupChip(e)}</div>` : ''}</td>
           <td class="col-extra"><span class="chip cat">${esc(e.category)}</span></td>
           <td class="num" data-v="${e.amount}">${money(e.amount)}</td>
-          <td><span class="chip status-${e.status}">${e.status.replace('_', ' ')}</span></td>
+          ${showStatus ? `<td><span class="chip status-${e.status}">${e.status.replace('_', ' ')}</span></td>` : ''}
           <td class="col-extra" data-v="${e.reimbursed ? esc(e.date_reimbursed || '9999') : ''}">${e.reimbursed ? `<span class="good-text">${icon('check')} ${fmtDate(e.date_reimbursed)}</span>` : '<span class="muted">No</span>'}</td>
         </tr>`).join('') || '<tr><td colspan="8" class="empty">No matching expenses</td></tr>'}
       </tbody>
@@ -1088,13 +1107,40 @@ const ledgerSwitch = active => `
     <button class="${active === 'ledger' ? 'on' : ''}" data-seg="ledger" role="tab">Expenses</button>
     <button class="${active === 'receipts' ? 'on' : ''}" data-seg="receipts" role="tab">Receipts</button>
   </div>`;
-const wireLedgerSwitch = () => $$('.seg button').forEach(b => b.addEventListener('click', () => { if (currentView !== b.dataset.seg) navigate(b.dataset.seg); }));
+const wireLedgerSwitch = () => {
+  $$('.seg button').forEach(b => b.addEventListener('click', () => { if (currentView !== b.dataset.seg) navigate(b.dataset.seg); }));
+  wireExportMenu();
+};
+
+// Exports live with the records they export. (The full JSON is inside the backup zip.)
+const exportMenu = () => `
+  <div class="menu-wrap">
+    <button class="btn" id="export-btn" aria-haspopup="true" aria-expanded="false">${icon('download')} Export ▾</button>
+    <div class="menu down export-menu" id="export-menu" hidden>
+      <a href="/api/export/pdf">${icon('file')}<span>Tax summary (PDF)<small>Itemized totals for a tax preparer</small></span></a>
+      <a href="/api/export/csv">${icon('table')}<span>Spreadsheet (CSV)<small>Approved expenses</small></span></a>
+      <a href="/api/export/csv?all=1">${icon('table')}<span>Spreadsheet, all records (CSV)<small>Includes pending and rejected</small></span></a>
+      <a href="/api/export/zip">${icon('zip')}<span>Full backup (zip)<small>Everything, including every receipt file</small></span></a>
+    </div>
+  </div>`;
+function wireExportMenu() {
+  const btn = $('#export-btn'), menu = $('#export-menu');
+  if (!btn) return;
+  const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('click', onDoc, true); };
+  const onDoc = ev => { if (!ev.target.closest('.menu-wrap') || ev.target.closest('#export-menu a')) setTimeout(close, 0); };
+  btn.addEventListener('click', () => {
+    if (!menu.hidden) return close();
+    menu.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    document.addEventListener('click', onDoc, true);
+  });
+}
 
 // One plain-words status per receipt, in place of a row of counters.
 function receiptSummary(r) {
   if (r.doc_kind === 'payment' && !r.expense_count) {
     return r.payment_for
-      ? { text: `Proof of payment for ${r.payment_for_name || 'a receipt'}`, cls: 'good-text', order: 5 }
+      ? { text: 'Proof of payment · linked', cls: 'good-text', order: 5 }
       : { text: 'Proof of payment — not linked', cls: 'warn-text', order: 4 };
   }
   const parts = [];
@@ -1125,19 +1171,22 @@ views.receipts = async function () {
       </div>
       <div class="actions">
         ${ledgerSwitch('receipts')}
+        ${exportMenu()}
         <button class="btn primary" id="rc-upload">${icon('upload')} Upload receipts</button>
       </div>
     </div>
 
     <div class="card"><div class="table-wrap"><table class="data" id="rc-table">
-      <thead><tr><th data-sort="received">Received</th><th data-sort="file">File</th><th data-sort="items" data-type="num">Items</th></tr></thead>
+      <thead><tr><th data-sort="received">Received</th><th data-sort="provider">From</th><th class="col-extra" data-sort="file">File</th><th class="num" data-sort="amount" data-type="num">Amount</th><th data-sort="items" data-type="num">Items</th></tr></thead>
       <tbody>
         ${receiptRows.map(r => { const sm = receiptSummary(r); return `
         <tr class="row-click ${paneKey === 'receipt:' + r.id ? 'row-selected' : ''}" data-id="${r.id}">
           <td style="white-space:nowrap" data-v="${esc(r.received_at)}">${fmtDate(r.received_at)}</td>
-          <td>${esc(r.original_name || r.filename)}</td>
+          <td>${esc(receiptProvider(r)) || '<span class="muted">—</span>'}${receiptDate(r) ? `<div class="muted" style="font-size:12px">${fmtDate(receiptDate(r))}</div>` : ''}</td>
+          <td class="col-extra muted">${esc(r.original_name || r.filename)}</td>
+          <td class="num" data-v="${receiptAmount(r) ?? ''}">${receiptAmount(r) != null ? money(receiptAmount(r)) : '<span class="muted">—</span>'}</td>
           <td class="${sm.cls}" style="white-space:nowrap" data-v="${sm.order}">${sm.text}</td>
-        </tr>`; }).join('') || '<tr><td colspan="3" class="empty">No receipts yet — drop one anywhere in the app.</td></tr>'}
+        </tr>`; }).join('') || '<tr><td colspan="5" class="empty">No receipts yet — drop one anywhere in the app.</td></tr>'}
       </tbody>
     </table></div></div>`;
 
@@ -1177,8 +1226,8 @@ function receiptPaneHtml(r, items) {
   return `
   <div class="drawer-head">
     <div>
-      <h2>${esc(name)}</h2>
-      <div class="drawer-sub">${fmtDate(r.received_at)} · ${r.source === 'email' ? 'from email' : r.source === 'import' ? 'imported' : 'uploaded'} · <span class="${sm.cls}">${sm.text}</span></div>
+      <h2>${esc(receiptProvider(r) || name)}</h2>
+      <div class="drawer-sub">${receiptProvider(r) ? `${esc(name)} · ` : ''}${fmtDate(r.received_at)} · ${r.source === 'email' ? 'from email' : r.source === 'import' ? 'imported' : 'uploaded'} · <span class="${sm.cls}">${sm.text}</span></div>
     </div>
     <button class="btn small ghost drawer-close" title="Close" aria-label="Close">${icon('x')}</button>
   </div>
@@ -1230,7 +1279,7 @@ function paymentSectionHtml(r) {
   if (r.doc_kind !== 'payment') return '';
   const head = `<div class="drawer-section-title">Proof of payment · ${paidBy(r)}</div>`;
   if (r.payment_for) {
-    return head + `<div class="g-fact good" style="margin:0 0 6px">${icon('check')} Linked to <a href="#" data-open-receipt="${r.payment_for}">${esc(r.payment_for_name || 'its receipt')}</a> — kept and counted together.
+    return head + `<div class="g-fact good" style="margin:0 0 6px">${icon('check')} Linked to <a href="#" data-open-receipt="${r.payment_for}">${esc(receiptLabel(receiptRows.find(x => x.id === r.payment_for)) || r.payment_for_name || 'its receipt')}</a> — kept and counted together.
       <button class="btn small ghost" data-pane-act="unlink">Unlink</button></div>`;
   }
   if (r.expense_count) return head + `<div class="g-fact" style="margin:0 0 6px">Recorded as its own expense (no itemized receipt).</div>`;
@@ -1440,31 +1489,14 @@ views.settings = async function () {
       </div>
     </div>
 
-    <h3 style="margin:26px 0 10px;font-size:14.5px">Backup &amp; export</h3>
-    <div class="export-grid" style="margin-bottom:8px">
-      <div class="card export-card">
-        <h3>${icon('zip', 16)} Everything (zip)</h3>
-        <p>Full backup: ledger CSVs, complete JSON, PDF summary, and every receipt file.</p>
-        <a class="btn primary" href="/api/export/zip">Download zip</a>
-      </div>
-      <div class="card export-card">
-        <h3>${icon('table', 16)} Ledger (CSV)</h3>
-        <p>Approved expenses as a spreadsheet-ready CSV.</p>
-        <a class="btn" href="/api/export/csv">Approved only</a>
-        <a class="btn ghost" href="/api/export/csv?all=1">All records</a>
-      </div>
-      <div class="card export-card">
-        <h3>${icon('file', 16)} Tax summary (PDF)</h3>
-        <p>Clean itemized summary with totals — for a tax preparer or the IRS packet.</p>
-        <a class="btn" href="/api/export/pdf">Download PDF</a>
-      </div>
-      <div class="card export-card">
-        <h3>${icon('code', 16)} Full data (JSON)</h3>
-        <p>Machine-readable export of every table, including the full audit history.</p>
-        <a class="btn" href="/api/export/json">Download JSON</a>
+    <div class="settings-form">
+      <div class="card settings-section" style="margin-top:16px">
+        <h3>Backup</h3>
+        <div class="s-sub">One zip with everything: your ledger, a PDF summary, the full history, and every receipt file. Keep a copy somewhere safe. The tax summary and spreadsheets are under <strong>Export</strong> in the Ledger.</div>
+        <a class="btn primary" href="/api/export/zip">${icon('zip')} Download full backup</a>
+        <button class="btn ghost" id="go-export">Go to Ledger exports ${icon('arrowRight')}</button>
       </div>
     </div>
-    <p class="inline-note" style="margin:0 0 22px">Individual receipts can be downloaded from Ledger → Receipts.</p>
 
     ${navigator.userAgent.includes('Electron') ? '' : `
     <div class="settings-form">
@@ -1558,6 +1590,8 @@ views.settings = async function () {
     }
     e.target.disabled = false;
   }));
+
+  $('#go-export').addEventListener('click', () => navigate('ledger'));
 
   $('#app-quit')?.addEventListener('click', async () => {
     try { await api('/quit', { method: 'POST' }); } catch { }

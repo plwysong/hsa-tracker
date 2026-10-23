@@ -34,7 +34,7 @@ The app checks the releases page each time it opens and shows an **Update availa
 - **What was actually paid, with proof** — discounts and credits are spread across a receipt's lines so each shows what was really paid, and a warning appears if the lines add up to more than was paid. A card slip uploaded alongside an invoice is recognized as proof of payment: it's linked to the invoice, kept with it (including in backups), and never counted as a second expense.
 - **Possible-duplicate warning** — the same purchase arriving twice (say, an emailed receipt and a photo of the paper one) is flagged before approval; "Not a duplicate" is remembered for that pair.
 - **Email ingestion (optional)** — point Settings at a dedicated free email account (e.g. a fresh Gmail with an [app password](https://myaccount.google.com/apppasswords)) and forward receipts to it; the app polls it over IMAP while running.
-- **Backup & export** — one-click zip of everything (CSV + JSON + PDF summary + all receipt files), or individual formats. The PDF summary is designed to hand to a tax preparer.
+- **Backup & export** — the Ledger's **Export** menu has the tax summary PDF (designed to hand to a tax preparer), spreadsheet CSVs, and a one-click zip of everything (CSV + JSON + PDF summary + all receipt files). The backup zip is also in Settings.
 - **Audit trail** — every decision, edit, and processing event is logged. Rejected items are kept, not deleted.
 - **Idempotent** — re-uploading the same file or re-processing the same email/order never creates duplicates.
 
@@ -78,7 +78,7 @@ To publish a new version: bump `version` in package.json, `npm run installer`, t
 - **Installed app:** `~/Library/Application Support/HSA Tracker/data/` — `hsa.db` (ledger, rationale, audit log, settings) plus `receipts/` (every original file).
 - **Running from source** (`npm start` / `npm run app`): `hsa-tracker/data/` instead.
 
-**Backing up that one `data/` folder backs up everything** (or just use Backup & Export → zip inside the app). `data/` is `.gitignore`d, so sharing this repo never shares your records.
+**Backing up that one `data/` folder backs up everything** (or just use Settings → Download full backup inside the app). `data/` is `.gitignore`d, so sharing this repo never shares your records.
 
 ## Architecture (for tinkerers)
 

@@ -405,7 +405,11 @@ api.get('/receipts', wrap((req, res) => {
       (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id AND e.status = 'approved') AS approved_count,
       (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id AND e.status = 'pending_review') AS pending_count,
       (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id AND e.status = 'rejected') AS rejected_count,
-      (SELECT COUNT(*) FROM discarded d WHERE d.receipt_id = r.id) AS discarded_count
+      (SELECT COUNT(*) FROM discarded d WHERE d.receipt_id = r.id) AS discarded_count,
+      -- Receipts stored before v1.7 have no provider/date/amount of their own; their lines do.
+      (SELECT provider FROM expenses e WHERE e.receipt_id = r.id AND COALESCE(provider, '') != '' ORDER BY id LIMIT 1) AS items_provider,
+      (SELECT MIN(date) FROM expenses e WHERE e.receipt_id = r.id) AS items_date,
+      ROUND((SELECT SUM(amount) FROM expenses e WHERE e.receipt_id = r.id AND e.status != 'rejected'), 2) AS items_total
     FROM receipts r ORDER BY r.received_at DESC, r.id DESC
   `).all();
   const byId = new Map(rows.map(r => [r.id, r]));
