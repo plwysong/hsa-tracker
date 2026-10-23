@@ -205,6 +205,7 @@ button { font: inherit; cursor: pointer; }
 .chip.pre-hsa.counted { color: color-mix(in srgb, var(--warning) 55%, var(--ink)); background: color-mix(in srgb, var(--warning) 15%, transparent); }
 .kpi .pre-hsa-hint { margin-top: 6px; }
 .chip.dup { white-space: nowrap; color: color-mix(in srgb, var(--warning) 55%, var(--ink)); background: color-mix(in srgb, var(--warning) 15%, transparent); }
+.pre-hsa-note.info { border-color: var(--border); background: color-mix(in srgb, var(--ink) 3%, transparent); }
 .pre-hsa-note.dup { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); background: color-mix(in srgb, var(--warning) 7%, transparent); }
 .pre-hsa-note.dup a { color: inherit; }
 .dup-note { font-size: 12.5px; margin-top: 6px; color: color-mix(in srgb, var(--warning) 55%, var(--ink)); }
@@ -434,6 +435,7 @@ pre.rawtext {
 .layout.panel-open .col-extra { display: none; }
 tr.row-click { cursor: pointer; }
 .item.row-click { cursor: pointer; padding: 10px 16px; align-items: center; }
+.row-click:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .item.row-click:hover { background: color-mix(in srgb, var(--ink) 2.5%, transparent); }
 .item.row-selected { background: color-mix(in srgb, var(--accent) 9%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
 /* Review panel: fields to check against the receipt */

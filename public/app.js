@@ -73,6 +73,17 @@ function sortable(table, key) {
   apply();
 }
 
+// Search boxes filter as you type. The view re-renders underneath, so the box
+// gets focus (and the cursor) back afterwards.
+let refocusSearch = null;
+function liveSearch(sel, apply) {
+  const box = $(sel);
+  if (!box) return;
+  if (refocusSearch === sel) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); refocusSearch = null; }
+  let t;
+  box.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { refocusSearch = sel; apply(box.value); }, 250); });
+}
+
 const icon = (name, size = 14) =>
   `<svg class="bicon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[name]}</svg>`;
 
@@ -464,7 +475,7 @@ views.dashboard = async function () {
     </div>
 
     <div class="card">
-      <div class="group-head"><span class="g-title">Recently approved</span>
+      <div class="group-head"><span class="g-title">Recently approved</span><span class="g-meta">latest approvals first</span>
         <span class="g-actions"><button class="btn small ghost" id="dash-ledger">Full ledger ${icon('arrowRight')}</button></span></div>
       <div class="table-wrap"><table class="data" id="dash-table">
         <thead><tr><th data-sort="date">Date</th><th data-sort="provider">Provider</th><th data-sort="description">Description</th><th data-sort="category">Category</th><th class="num" data-sort="amount" data-type="num">Amount</th></tr></thead>
@@ -521,7 +532,7 @@ views.review = async function () {
     <div class="page-head">
       <div>
         <h1>Review Queue</h1>
-        <div class="sub">Nothing reaches the permanent ledger without your approval. ${items.length} item${items.length === 1 ? '' : 's'} · ${money(total)}</div>
+        <div class="sub">Nothing reaches the permanent ledger without your approval. <span id="rq-total">${items.length} item${items.length === 1 ? '' : 's'} · ${money(total)}</span></div>
       </div>
       <div class="actions"><button class="btn" id="rq-upload">${icon('upload')} Upload receipts</button></div>
     </div>
@@ -562,7 +573,7 @@ views.review = async function () {
     </div>`;
 
   $('#rq-upload').addEventListener('click', () => $('#file-input').click());
-  $('#rq-q')?.addEventListener('change', e => { reviewFilters.q = e.target.value; views.review(); });
+  liveSearch('#rq-q', q => { reviewFilters.q = q; views.review(); });
   $('#rq-conf')?.addEventListener('change', e => { reviewFilters.confidence = e.target.value; views.review(); });
   $('#rq-cat')?.addEventListener('change', e => { reviewFilters.category = e.target.value; views.review(); });
   $('#rq-src')?.addEventListener('change', e => { reviewFilters.source = e.target.value; views.review(); });
@@ -600,10 +611,6 @@ views.review = async function () {
     rowFor(id)?.classList.add('row-selected');
     const list = groups.get([...groups.keys()].find(k => groups.get(k).includes(e)));
     openReviewPane(e, settings, { list, order, rowFor });
-  };
-  main.onkeydown = ev => {
-    const row = ev.target.closest?.('.item[data-id]');
-    if (row && ev.target === row && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); row.click(); }
   };
 
   main.onclick = actionHandler(async e => {
@@ -728,8 +735,23 @@ function closePane() {
   $$('.row-selected').forEach(r => r.classList.remove('row-selected'));
 }
 
+// Clickable rows open from the keyboard too: Tab to one, then Enter or Space.
+document.addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('.row-click[tabindex]')) { e.preventDefault(); e.target.click(); }
+});
+
 // Escape closes the topmost thing: an open menu, then a dialog, then the detail pane.
 document.addEventListener('keydown', e => {
+  // Tab cycles within an open dialog instead of wandering into the page behind it.
+  if (e.key === 'Tab' && modalOpen()) {
+    const f = [...$('#modal').querySelectorAll('button, input, select, textarea, a[href]')].filter(el => !el.disabled && el.offsetParent);
+    if (!f.length) return;
+    const [first, last] = [f[0], f[f.length - 1]];
+    if (!$('#modal').contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    return;
+  }
   if (e.key !== 'Escape') return;
   const menu = document.querySelector('.menu:not([hidden])');
   if (menu) { menu.hidden = true; menu.parentElement.querySelector('[aria-expanded]')?.setAttribute('aria-expanded', 'false'); return; }
@@ -786,7 +808,7 @@ function expensePaneHtml(e, settings) {
   </div>
   <div class="drawer-foot">
     ${e.status === 'approved'
-      ? `<button class="btn primary" data-pane-act="toggle-reimb">${e.reimbursed ? 'Un-reimburse' : 'Mark reimbursed'}</button>`
+      ? `<button class="btn primary" data-pane-act="toggle-reimb">${e.reimbursed ? 'Mark not reimbursed' : 'Mark reimbursed'}</button>`
       : e.status === 'pending_review'
         ? `<button class="btn good" data-pane-act="approve">${icon('check')} Approve</button>`
         : `<button class="btn primary" data-pane-act="reopen">${icon('undo')} Re-queue</button>`}
@@ -948,7 +970,13 @@ function openReviewPane(e, settings, { list, order, rowFor }) {
       status.textContent = 'Saved ✓';
       // Keep the heading and the queue row in step without re-rendering (that would steal focus).
       if (key === 'description') { pane.querySelector('#rp-title').textContent = value; rowFor(e.id)?.querySelector('.desc')?.replaceChildren(value); }
-      if (key === 'amount') { pane.querySelector('#rp-amount').textContent = money(value); rowFor(e.id)?.querySelector('.amount')?.replaceChildren(money(value)); }
+      if (key === 'amount') {
+        pane.querySelector('#rp-amount').textContent = money(value);
+        rowFor(e.id)?.querySelector('.amount')?.replaceChildren(money(value));
+        const count = (xs, word = 'item') => `${xs.length} ${word}${xs.length === 1 ? '' : 's'} · ${money(xs.reduce((s, x) => s + x.amount, 0))}`;
+        rowFor(e.id)?.closest('.group')?.querySelector('.g-meta')?.replaceChildren(count(list));
+        $('#rq-total')?.replaceChildren(count(order));
+      }
       return true;
     };
     pane.onchange = ev => {
@@ -1023,6 +1051,7 @@ views.ledger = async function () {
     : `Total: ${money(total)}`;
 
   // Every row says "approved" when that's the filter — skip the column and give the space to descriptions.
+  // When Status shows, the reimbursed date rides in it instead of a column of its own, so the table still fits.
   const showStatus = ledgerFilters.status !== 'approved';
 
   main.innerHTML = `
@@ -1054,7 +1083,7 @@ views.ledger = async function () {
         ${years.map(y => `<option ${ledgerFilters.year === y ? 'selected' : ''}>${y}</option>`).join('')}
       </select>
       <select id="lg-reimb" aria-label="Reimbursed">
-        <option value="">Reimbursed &amp; not</option>
+        <option value="">Any reimbursement status</option>
         <option value="no" ${ledgerFilters.reimbursed === 'no' ? 'selected' : ''}>Not reimbursed</option>
         <option value="yes" ${ledgerFilters.reimbursed === 'yes' ? 'selected' : ''}>Reimbursed</option>
       </select>
@@ -1069,19 +1098,20 @@ views.ledger = async function () {
       <thead><tr>
         <th style="width:26px"><input type="checkbox" id="lg-all" title="Select all" aria-label="Select all"></th>
         <th data-sort="date">Date</th><th class="col-extra" data-sort="provider">Provider</th><th data-sort="description">Description</th><th class="col-extra" data-sort="category">Category</th>
-        <th class="num" data-sort="amount" data-type="num">Amount</th>${showStatus ? '<th data-sort="status">Status</th>' : ''}<th class="col-extra" data-sort="reimbursed">Reimbursed</th>
+        <th class="num" data-sort="amount" data-type="num">Amount</th>${showStatus ? '<th data-sort="status">Status</th>' : '<th class="col-extra" data-sort="reimbursed">Reimbursed</th>'}
       </tr></thead>
       <tbody>
         ${rows.map(e => `
-        <tr class="row-click ${paneKey === 'expense:' + e.id ? 'row-selected' : ''}" data-id="${e.id}">
+        <tr class="row-click ${paneKey === 'expense:' + e.id ? 'row-selected' : ''}" data-id="${e.id}" tabindex="0">
           <td><input type="checkbox" class="lg-check" data-id="${e.id}" aria-label="Select ${esc(e.description)}" ${ledgerSelected.has(e.id) ? 'checked' : ''}></td>
           <td style="white-space:nowrap" data-v="${esc(e.date)}">${fmtDate(e.date)}</td>
           <td class="col-extra">${esc(e.provider)}</td>
           <td>${esc(e.description)}${beforeEstablished(e, settings) || e.duplicates?.length ? `<div class="row-chips">${preHsaChip(e, settings)}${dupChip(e)}</div>` : ''}</td>
           <td class="col-extra"><span class="chip cat">${esc(e.category)}</span></td>
           <td class="num" data-v="${e.amount}">${money(e.amount)}</td>
-          ${showStatus ? `<td><span class="chip status-${e.status}">${e.status.replace('_', ' ')}</span></td>` : ''}
-          <td class="col-extra" data-v="${e.reimbursed ? esc(e.date_reimbursed || '9999') : ''}">${e.reimbursed ? `<span class="good-text">${icon('check')} ${fmtDate(e.date_reimbursed)}</span>` : '<span class="muted">No</span>'}</td>
+          ${showStatus
+            ? `<td><span class="chip status-${e.status}">${e.status.replace('_', ' ')}</span>${e.reimbursed ? `<div class="good-text" style="font-size:12px;margin-top:3px">Reimbursed ${fmtDate(e.date_reimbursed)}</div>` : ''}</td>`
+            : `<td class="col-extra" data-v="${e.reimbursed ? esc(e.date_reimbursed || '9999') : ''}">${e.reimbursed ? `<span class="good-text">${icon('check')} ${fmtDate(e.date_reimbursed)}</span>` : '<span class="muted">No</span>'}</td>`}
         </tr>`).join('') || '<tr><td colspan="8" class="empty">No matching expenses</td></tr>'}
       </tbody>
       ${rows.length ? `<tfoot><tr><td colspan="99" style="text-align:right">${footParts}</td></tr></tfoot>` : ''}
@@ -1090,7 +1120,7 @@ views.ledger = async function () {
     <div class="bulkbar" id="lg-bulkbar" hidden>
       <span id="lg-bulk-count"></span>
       <button class="btn small good" data-bulk="reimburse">${icon('check')} Mark reimbursed</button>
-      <button class="btn small" data-bulk="unreimburse">Un-reimburse</button>
+      <button class="btn small" data-bulk="unreimburse">Mark not reimbursed</button>
       <button class="btn small" data-bulk="receipts">${icon('download')} Receipts</button>
       <button class="btn small" data-bulk="csv">${icon('download')} CSV</button>
       <button class="btn small" data-bulk="category">Category…</button>
@@ -1114,7 +1144,7 @@ views.ledger = async function () {
   };
 
   sortable($('#lg-table'), 'ledger');
-  $('#lg-q').addEventListener('change', e => { ledgerFilters.q = e.target.value; refresh(); });
+  liveSearch('#lg-q', q => { ledgerFilters.q = q; refresh(); });
   $('#lg-status').addEventListener('change', e => { ledgerFilters.status = e.target.value; refresh(); });
   $('#lg-cat').addEventListener('change', e => { ledgerFilters.category = e.target.value; refresh(); });
   $('#lg-year').addEventListener('change', e => { ledgerFilters.year = e.target.value; refresh(); });
@@ -1316,7 +1346,7 @@ views.receipts = async function () {
       <thead><tr><th data-sort="received">Received</th><th data-sort="provider">From</th><th class="col-extra" data-sort="file">File</th><th class="num" data-sort="amount" data-type="num">Amount</th><th data-sort="items" data-type="num">Items</th></tr></thead>
       <tbody>
         ${receiptRows.map(r => { const sm = receiptSummary(r); return `
-        <tr class="row-click ${paneKey === 'receipt:' + r.id ? 'row-selected' : ''}" data-id="${r.id}">
+        <tr class="row-click ${paneKey === 'receipt:' + r.id ? 'row-selected' : ''}" data-id="${r.id}" tabindex="0">
           <td style="white-space:nowrap" data-v="${esc(r.received_at)}">${fmtDate(r.received_at)}</td>
           <td>${esc(receiptProvider(r)) || '<span class="muted">—</span>'}${receiptDate(r) ? `<div class="muted" style="font-size:12px">${fmtDate(receiptDate(r))}</div>` : ''}</td>
           <td class="col-extra muted">${esc(r.original_name || r.filename)}</td>
@@ -1650,7 +1680,7 @@ views.settings = async function () {
     const el = $('#pre-hsa-summary');
     if (!el) return;
     const st = await api('/stats');
-    el.innerHTML = st.record_only_count ? `<div class="pre-hsa-note">
+    el.innerHTML = st.record_only_count ? `<div class="pre-hsa-note info">
       <strong>${st.record_only_count} approved expense${st.record_only_count === 1 ? '' : 's'} (${money(st.record_only_total)})</strong> ${st.record_only_count === 1 ? 'is' : 'are'} dated before this.
       ${st.record_only_count === 1 ? 'It stays' : 'They stay'} in your ledger as records but no longer count toward what you can withdraw.
       ${st.record_only_reimbursed_count ? `<strong>${st.record_only_reimbursed_count} ${st.record_only_reimbursed_count === 1 ? 'was' : 'were'} already reimbursed from your HSA</strong> — worth reviewing with a tax preparer.` : ''}
@@ -1685,16 +1715,19 @@ views.settings = async function () {
     hsa_established: $('#set-hsa-established').value,
   } }).then(r => { refreshEmailHint(); return r; });
 
-  // Auto-save: radios/checkboxes persist immediately, typing is debounced.
-  let saveTimer, statusTimer;
+  // Auto-save: radios/checkboxes persist immediately, typing is debounced and quiet —
+  // the "Settings saved" toast comes once, when you leave the field.
+  let saveTimer, statusTimer, announce = false;
   const autoSave = async () => {
+    const loud = announce;
+    announce = false;
     try {
       await saveSettings();
       showPreHsaSummary();
       // Toast is visible wherever you are on the page; the header tick is a quiet
       // secondary cue when you're near the top. (The old header-only indicator was
       // off-screen when editing the email section at the bottom.)
-      toast('Settings saved');
+      if (loud) toast('Settings saved');
       const el = $('#save-status');
       if (el) {
         el.textContent = ' Saved ✓';
@@ -1705,10 +1738,10 @@ views.settings = async function () {
       toast('Could not save settings: ' + err.message);
     }
   };
-  const queueSave = () => { clearTimeout(saveTimer); saveTimer = setTimeout(autoSave, 600); };
+  const queueSave = loud => { announce ||= loud; clearTimeout(saveTimer); saveTimer = setTimeout(autoSave, 600); };
   $$('.settings-form input').forEach(i => {
-    i.addEventListener('input', queueSave);
-    i.addEventListener('change', queueSave);
+    i.addEventListener('input', () => queueSave(false));
+    i.addEventListener('change', () => queueSave(true));
   });
 
   $$('.ai-test').forEach(btn => btn.addEventListener('click', async e => {
