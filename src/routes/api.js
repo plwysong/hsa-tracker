@@ -199,7 +199,7 @@ api.get('/expenses', wrap((req, res) => {
   }
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   const rows = db.prepare(`
-    SELECT e.*, r.filename AS receipt_filename, r.original_name AS receipt_original_name, r.source AS receipt_source
+    SELECT e.*, r.filename AS receipt_filename, r.original_name AS receipt_original_name, r.mime AS receipt_mime, r.source AS receipt_source
     FROM expenses e LEFT JOIN receipts r ON r.id = e.receipt_id
     ${where} ORDER BY e.date DESC, e.id DESC
   `).all(...params);
@@ -209,7 +209,7 @@ api.get('/expenses', wrap((req, res) => {
 
 api.get('/expenses/:id(\\d+)', wrap((req, res) => {
   const row = db.prepare(`
-    SELECT e.*, r.filename AS receipt_filename, r.original_name AS receipt_original_name
+    SELECT e.*, r.filename AS receipt_filename, r.original_name AS receipt_original_name, r.mime AS receipt_mime
     FROM expenses e LEFT JOIN receipts r ON r.id = e.receipt_id WHERE e.id = ?
   `).get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
@@ -468,8 +468,8 @@ api.delete('/receipts/:id', wrap((req, res) => {
 // A payment-only document (card slip) backs an itemized receipt instead of
 // creating an expense. Auto-linked at ingest; these let the user fix or override.
 function paymentProofs(receiptId) {
-  return db.prepare('SELECT id, original_name, filename, payment_ref, amount_paid FROM receipts WHERE payment_for = ?').all(receiptId)
-    .map(p => ({ id: p.id, name: p.original_name || p.filename, filename: p.filename, payment_ref: p.payment_ref, amount_paid: p.amount_paid }));
+  return db.prepare('SELECT id, original_name, filename, mime, payment_ref, amount_paid FROM receipts WHERE payment_for = ?').all(receiptId)
+    .map(p => ({ id: p.id, name: p.original_name || p.filename, filename: p.filename, mime: p.mime, payment_ref: p.payment_ref, amount_paid: p.amount_paid }));
 }
 const paymentDoc = id => db.prepare("SELECT * FROM receipts WHERE id = ? AND doc_kind = 'payment'").get(id);
 
@@ -529,17 +529,26 @@ api.post('/discarded/:id/requeue', wrap((req, res) => {
   const d = db.prepare('SELECT * FROM discarded WHERE id = ?').get(req.params.id);
   if (!d) return res.status(404).json({ error: 'Not found' });
   if (!Number.isFinite(d.amount) || d.amount <= 0) return res.status(400).json({ error: 'This entry has no amount — add it manually from the Ledger instead.' });
-  // Date the item from its receipt's other line items when possible, not from today
-  const docDate = d.receipt_id
-    ? db.prepare('SELECT date FROM expenses WHERE receipt_id = ? ORDER BY id LIMIT 1').get(d.receipt_id)?.date
+  // Date and provider come from the receipt's other line items, else from the
+  // receipt itself — not today and blank, which the user would have to fix by hand.
+  const sibling = d.receipt_id
+    ? db.prepare('SELECT date, provider FROM expenses WHERE receipt_id = ? ORDER BY id LIMIT 1').get(d.receipt_id)
     : null;
-  const r = db.prepare(`
-    INSERT INTO expenses (date, provider, category, description, amount, status, confidence, rationale, source_type, receipt_id)
-    VALUES (?, ?, 'Other', ?, ?, 'pending_review', 'Low', ?, 'manual', ?)
-  `).run(docDate || localToday(), '', d.description, cents(d.amount),
-    `Originally auto-discarded ("${d.reason}") — re-queued by user for reconsideration.`, d.receipt_id);
-  audit('requeue_discarded', { discardedId: d.id, newExpenseId: Number(r.lastInsertRowid) });
-  res.json({ id: Number(r.lastInsertRowid) });
+  const doc = d.receipt_id ? db.prepare('SELECT doc_date, provider FROM receipts WHERE id = ?').get(d.receipt_id) : null;
+  // A move, not a copy: the reason travels into the new row's rationale and the
+  // audit log, and the discarded entry can't be re-queued a second time.
+  db.exec('BEGIN');
+  try {
+    const r = db.prepare(`
+      INSERT INTO expenses (date, provider, category, description, amount, status, confidence, rationale, source_type, receipt_id)
+      VALUES (?, ?, 'Other', ?, ?, 'pending_review', 'Low', ?, 'manual', ?)
+    `).run(sibling?.date || doc?.doc_date || localToday(), sibling?.provider || doc?.provider || '', d.description, cents(d.amount),
+      `Originally auto-discarded ("${d.reason}") — re-queued by user for reconsideration.`, d.receipt_id);
+    db.prepare('DELETE FROM discarded WHERE id = ?').run(d.id);
+    audit('requeue_discarded', { discardedId: d.id, reason: d.reason, newExpenseId: Number(r.lastInsertRowid) });
+    db.exec('COMMIT');
+    res.json({ id: Number(r.lastInsertRowid) });
+  } catch (err) { db.exec('ROLLBACK'); throw err; }
 }));
 
 api.get('/audit', wrap((req, res) => {

@@ -187,6 +187,9 @@ function addColumn(table, column, definition) {
 addColumn('expenses', 'pre_hsa_override', 'INTEGER DEFAULT 0');
 // Migration: what a line cost before a document-level discount was spread across it.
 addColumn('expenses', 'list_amount', 'REAL');
+// Migration: which engine judged the line ('keywords' / 'keywords-fallback' mean no AI
+// looked at it). Empty on rows from older versions and on rows the user created.
+addColumn('expenses', 'triage_engine', 'TEXT');
 // Migration: document-level facts read from each receipt. doc_kind is 'itemized'
 // (lists what was bought) or 'payment' (only proves a payment — a card slip). A
 // payment document creates no expenses; payment_for links it to the itemized

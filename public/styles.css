@@ -99,6 +99,7 @@ button { font: inherit; cursor: pointer; }
   display: block; width: 100%; text-align: left; margin: 0 0 6px;
   padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: none; color: var(--ink-2);
 }
+.side-email[hidden] { display: none; }
 .side-email:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 .side-email .se-label { font-size: 11px; color: var(--muted); }
 .side-email .se-addr { font-size: 12px; font-weight: 600; word-break: break-all; margin: 2px 0; }
@@ -198,6 +199,7 @@ button { font: inherit; cursor: pointer; }
 .chip.conf-Low { color: color-mix(in srgb, var(--serious) 70%, var(--ink)); background: color-mix(in srgb, var(--serious) 15%, transparent); }
 .chip.cat { color: var(--ink-2); border-color: var(--border); }
 .chip.src { color: var(--muted); }
+.chip.no-ai { color: color-mix(in srgb, var(--serious) 70%, var(--ink)); background: color-mix(in srgb, var(--serious) 15%, transparent); }
 .chip.pre-hsa { white-space: nowrap; color: var(--critical); background: color-mix(in srgb, var(--critical) 11%, transparent); }
 .chip.pre-hsa.record { color: var(--ink-2); background: transparent; border-color: var(--border); }
 .chip.pre-hsa.counted { color: color-mix(in srgb, var(--warning) 55%, var(--ink)); background: color-mix(in srgb, var(--warning) 15%, transparent); }
@@ -417,6 +419,9 @@ pre.rawtext {
 .drawer-rationale { font-size: 13px; color: var(--ink-2); background: color-mix(in srgb, var(--ink) 3.5%, transparent); border-left: 3px solid var(--accent); padding: 10px 12px; border-radius: 0 8px 8px 0; }
 .drawer-receipt { border: 1px solid var(--grid); border-radius: 10px; overflow: hidden; height: 300px; }
 .drawer-receipt iframe { width: 100%; height: 100%; border: 0; }
+/* Photos fit the pane's width and scroll, instead of showing a corner at full size. */
+.drawer-receipt.img { overflow-y: auto; background: color-mix(in srgb, var(--ink) 3%, transparent); }
+.drawer-receipt.img img { display: block; width: 100%; height: auto; cursor: zoom-in; }
 .drawer-foot { display: flex; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--grid); flex-wrap: wrap; }
 .drawer-confirm {
   margin-top: 14px; padding: 12px 14px; border: 1px solid var(--critical); border-radius: 10px;

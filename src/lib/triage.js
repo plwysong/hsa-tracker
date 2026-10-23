@@ -232,7 +232,7 @@ function keywordTriage(text) {
     // No silent misses: lines with an amount but no keyword go to the Discarded
     // log so they stay auditable and re-queueable instead of vanishing.
     if (!matched) {
-      items.push({ description: desc, amount, date: itemDate, category: 'Other', verdict: 'not_eligible', confidence: 'Low', rationale: 'No medical keyword matched (offline mode). If this is actually a medical expense, re-queue it from the Discarded tab or re-triage the receipt with an AI engine.' });
+      items.push({ description: desc, amount, date: itemDate, category: 'Other', verdict: 'not_eligible', confidence: 'Low', rationale: 'No medical keyword matched (offline mode). If this is actually a medical expense, re-queue it, or re-triage the receipt with an AI engine.' });
     }
   }
   // A card-terminal slip lists no purchases, only a charge: record it as proof of

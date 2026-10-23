@@ -157,8 +157,8 @@ async function extractInto(receiptId, buffer, mime, originalName, sourceDetail) 
 function insertTriageResults(job, receiptId, triage, sourceType) {
   const insExpense = db.prepare(`
     INSERT INTO expenses (date, provider, category, description, amount, payment_method, status,
-      confidence, rationale, source_type, receipt_id, order_ref, list_amount)
-    VALUES (?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?)
+      confidence, rationale, source_type, receipt_id, order_ref, list_amount, triage_engine)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?, ?)
   `);
   const insDiscarded = db.prepare('INSERT INTO discarded (receipt_id, description, amount, reason) VALUES (?, ?, ?, ?)');
   const docDate = triage.purchase_date || localToday();
@@ -170,7 +170,7 @@ function insertTriageResults(job, receiptId, triage, sourceType) {
       insExpense.run(item.date || docDate, triage.provider || 'Unknown', item.category || 'Other',
         item.description, cents(item.amount), triage.payment_method || null,
         item.confidence || 'Low', item.rationale || '', sourceType, receiptId,
-        triage.order_ref ? String(triage.order_ref) : null, item.list_amount ?? null);
+        triage.order_ref ? String(triage.order_ref) : null, item.list_amount ?? null, triage.ai_provider || null);
       job.queued++;
     }
   }

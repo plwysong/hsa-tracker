@@ -176,6 +176,23 @@ async function approveGuarded(send, { rejectId } = {}) {
 }
 const dupChip = e => e.duplicates?.length
   ? `<span class="chip dup" title="Same date, amount and provider as: ${esc(e.duplicates.map(d => `${d.description} (${d.status.replace('_', ' ')})`).join('; '))}">Possible duplicate</span>` : '';
+// Items the keyword matcher judged (offline mode, or the AI engine failed) were
+// never looked at by AI, so they show that instead of a confidence level. Rows
+// from before triage_engine was recorded are recognized by their rationale.
+const notAiChecked = e => e.triage_engine
+  ? e.triage_engine.startsWith('keywords')
+  : /keyword match — no AI provider configured|coarse keyword result/.test(e.rationale || '');
+const confChip = e => notAiChecked(e)
+  ? '<span class="chip no-ai" title="Judged by keyword matching only — check it against the receipt yourself.">Not checked by AI</span>'
+  : e.confidence ? `<span class="chip conf-${esc(e.confidence)}">${esc(e.confidence)} confidence</span>` : '';
+
+// Browsers can show these image types directly; anything else (PDF, HTML, text,
+// HEIC/TIFF) goes in a frame.
+const isWebImage = mime => /^image\/(jpeg|png|gif|webp|bmp)$/i.test(mime || '');
+const receiptViewer = (id, mime, title, extra = '') => isWebImage(mime)
+  ? `<div class="drawer-receipt img ${extra}"><img src="/api/receipts/${id}/file" alt="${esc(title)}" title="Open full size" data-open-file="${id}"></div>`
+  : `<div class="drawer-receipt ${extra}"><iframe src="/api/receipts/${id}/file#toolbar=0" title="${esc(title)}"></iframe></div>`;
+
 // ---------------- Proof of payment ----------------
 // A card slip proves an itemized receipt was paid; linked, the two are kept and
 // counted together (the slip adds no expense of its own).
@@ -266,7 +283,7 @@ function navigate(view, opts = {}) {
   closeModal();
   main.onclick = main.onchange = null; // drop the previous view's delegated handlers
   location.hash = '#/' + view;
-  const navView = view === 'receipts' ? 'ledger' : view;
+  const navView = { receipts: 'ledger', discarded: 'review' }[view] || view;
   $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === navView));
   views[view](opts);
   refreshBadge();
@@ -366,6 +383,7 @@ function columnChart(data, { valueKey = 'total', labelKey = 'label', width = 520
 views.dashboard = async function () {
   main.innerHTML = '<div class="empty">Loading…</div>';
   const s = await api('/stats');
+  const settings = await api('/settings');
   const catData = s.byCategory.map(c => ({ label: c.category, total: c.total, count: c.count }));
   const yearData = s.byYear.map(y => ({ label: y.year, total: y.total }));
 
@@ -375,7 +393,7 @@ views.dashboard = async function () {
     main.innerHTML = `
       <div class="page-head">
         <div>
-          <h1>Dashboard</h1>
+          <h1>Home</h1>
           <div class="sub">Your future tax-free withdrawal balance, documented and audit-ready.</div>
         </div>
       </div>
@@ -392,7 +410,7 @@ views.dashboard = async function () {
   main.innerHTML = `
     <div class="page-head">
       <div>
-        <h1>Dashboard</h1>
+        <h1>Home</h1>
         <div class="sub">Your future tax-free withdrawal balance, documented and audit-ready.</div>
       </div>
       <div class="actions">
@@ -406,12 +424,12 @@ views.dashboard = async function () {
         <div class="label">Available for tax-free withdrawal</div>
         <div class="value">${money(s.unreimbursed_total)}</div>
         <div class="hint">approved &amp; not yet reimbursed</div>
-        ${s.record_only_count ? `<div class="hint pre-hsa-hint"><a href="#/ledger" id="dash-prehsa">${s.record_only_count} receipt${s.record_only_count === 1 ? '' : 's'} (${money(s.record_only_total)})</a> from before your HSA ${s.record_only_count === 1 ? 'is' : 'are'} kept as records, not counted${s.record_only_reimbursed_count ? ` — <strong>${s.record_only_reimbursed_count} already reimbursed</strong>` : ''}</div>` : ''}
       </div>
       <div class="card kpi">
-        <div class="label">Total eligible logged</div>
-        <div class="value">${money(s.approved_total)}</div>
-        <div class="hint">${s.approved_count} approved expense${s.approved_count === 1 ? '' : 's'}</div>
+        <div class="label">All approved expenses</div>
+        <div class="value">${money(s.approved_total + s.record_only_total)}</div>
+        <div class="hint">${s.approved_count} counted${s.record_only_count ? ` · <a href="#/ledger" id="dash-prehsa">${s.record_only_count} record${s.record_only_count === 1 ? '' : 's'} only (${money(s.record_only_total)})</a>, dated before your HSA` : ''}</div>
+        ${s.record_only_reimbursed_count ? `<div class="hint pre-hsa-hint"><strong>${s.record_only_reimbursed_count} record${s.record_only_reimbursed_count === 1 ? '' : 's'} only ${s.record_only_reimbursed_count === 1 ? 'was' : 'were'} reimbursed</strong> — worth reviewing with a tax preparer.</div>` : ''}
       </div>
       <div class="card kpi">
         <div class="label">Reimbursed to date</div>
@@ -444,7 +462,7 @@ views.dashboard = async function () {
       <div class="table-wrap"><table class="data" id="dash-table">
         <thead><tr><th data-sort="date">Date</th><th data-sort="provider">Provider</th><th data-sort="description">Description</th><th data-sort="category">Category</th><th class="num" data-sort="amount" data-type="num">Amount</th></tr></thead>
         <tbody>${s.recent.map(e => `
-          <tr><td data-v="${esc(e.date)}">${fmtDate(e.date)}</td><td>${esc(e.provider)}</td><td>${esc(e.description)}</td>
+          <tr><td style="white-space:nowrap" data-v="${esc(e.date)}">${fmtDate(e.date)} ${preHsaChip(e, settings)}</td><td>${esc(e.provider)}</td><td>${esc(e.description)}</td>
           <td><span class="chip cat">${esc(e.category)}</span></td><td class="num" data-v="${e.amount}">${money(e.amount)}</td></tr>`).join('') ||
           '<tr><td colspan="5" class="empty">Nothing approved yet</td></tr>'}
         </tbody>
@@ -499,16 +517,16 @@ views.review = async function () {
 
     ${items.length || Object.values(reviewFilters).some(Boolean) ? `
     <div class="filters">
-      <input type="search" id="rq-q" placeholder="Search…" value="${esc(reviewFilters.q)}">
-      <select id="rq-conf">
+      <input type="search" id="rq-q" placeholder="Search…" aria-label="Search the review queue" value="${esc(reviewFilters.q)}">
+      <select id="rq-conf" aria-label="Confidence">
         <option value="">All confidence</option>
         ${['High', 'Medium', 'Low'].map(c => `<option ${reviewFilters.confidence === c ? 'selected' : ''}>${c}</option>`).join('')}
       </select>
-      <select id="rq-cat">
+      <select id="rq-cat" aria-label="Category">
         <option value="">All categories</option>
         ${(settings.categories || []).map(c => `<option ${reviewFilters.category === c ? 'selected' : ''}>${c}</option>`).join('')}
       </select>
-      <select id="rq-src">
+      <select id="rq-src" aria-label="Source">
         <option value="">All sources</option>
         <option value="upload" ${reviewFilters.source === 'upload' ? 'selected' : ''}>Upload</option>
         <option value="email" ${reviewFilters.source === 'email' ? 'selected' : ''}>Email</option>
@@ -627,6 +645,9 @@ function renderGroup(key, list, settings, rc) {
   const first = list[0];
   const sum = list.reduce((s, e) => s + e.amount, 0);
   const ids = JSON.stringify(list.map(e => e.id));
+  const unchecked = list.filter(notAiChecked).length;
+  // Approving a whole receipt at once is only the obvious move when AI was sure of every line.
+  const cautious = unchecked || list.some(e => e.confidence !== 'High');
   const title = first.receipt_id
     ? (first.receipt_original_name || first.receipt_filename || `Receipt #${first.receipt_id}`)
     : (first.order_ref ? `${first.provider} — order ${first.order_ref}` : first.provider || 'Ungrouped');
@@ -637,21 +658,22 @@ function renderGroup(key, list, settings, rc) {
       <span class="g-meta">${list.length} item${list.length === 1 ? '' : 's'} · ${money(sum)}</span>
       ${first.receipt_id ? `<button class="btn small ghost" data-act="view-receipt" data-rid="${first.receipt_id}">View receipt</button>` : ''}
       <span class="g-actions">
-        <button class="btn small good" data-group-act="approve" data-ids='${ids}'>${icon('check')} Approve all</button>
+        <button class="btn small ${cautious ? '' : 'good'}" data-group-act="approve" data-ids='${ids}'>${icon('check')} Approve all</button>
         <button class="btn small" data-group-act="reject" data-ids='${ids}'>${icon('x')} Reject all</button>
       </span>
     </div>
+    ${unchecked ? `<div class="g-fact warn">AI didn't check ${unchecked === list.length ? (list.length === 1 ? 'this item' : 'these items') : `${unchecked} of these items`} — only keyword matching did. Compare ${unchecked === 1 ? 'it' : 'them'} with the receipt before approving.</div>` : ''}
     ${receiptFactsHtml(rc)}
     ${list.map(e => `
       <div class="item">
-        <input type="checkbox" data-id="${e.id}">
+        <input type="checkbox" data-id="${e.id}" aria-label="Select ${esc(e.description)}">
         <div class="body">
           <div class="desc">${esc(e.description)}</div>
           <div class="meta">
             <span>${fmtDate(e.date)}</span>·<span>${esc(e.provider)}</span>
             ${preHsaChip(e, settings)}${dupChip(e)}
             <span class="chip cat">${esc(e.category)}</span>
-            <span class="chip conf-${esc(e.confidence)}">${esc(e.confidence)} confidence</span>
+            ${confChip(e)}
             <span class="chip src">${esc(e.source_type)}</span>
             ${e.order_ref ? `<span class="muted mono">${esc(e.order_ref)}</span>` : ''}
           </div>
@@ -693,7 +715,8 @@ function closePane() {
   $$('.row-selected').forEach(r => r.classList.remove('row-selected'));
 }
 
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closePane(); });
+// Escape closes the topmost thing: an open dialog first, then the detail pane.
+document.addEventListener('keydown', e => { if (e.key === 'Escape') modalOpen() ? closeModal() : closePane(); });
 
 function expensePaneHtml(e, settings) {
   return `
@@ -712,7 +735,7 @@ function expensePaneHtml(e, settings) {
       <div><div class="m-label">Category</div><div class="m-value"><span class="chip cat">${esc(e.category)}</span></div></div>
       <div><div class="m-label">Reimbursed</div><div class="m-value">${e.reimbursed ? `Yes — ${fmtDate(e.date_reimbursed)}` : 'No — available for withdrawal'}</div></div>
       <div><div class="m-label">Source</div><div class="m-value">${esc(e.source_type)}${e.payment_method ? ` · ${esc(e.payment_method)}` : ''}</div></div>
-      <div><div class="m-label">AI confidence</div><div class="m-value">${e.confidence ? `<span class="chip conf-${esc(e.confidence)}">${esc(e.confidence)}</span>` : '—'}</div></div>
+      <div><div class="m-label">AI confidence</div><div class="m-value">${notAiChecked(e) ? confChip(e) : e.confidence ? `<span class="chip conf-${esc(e.confidence)}">${esc(e.confidence)}</span>` : '—'}</div></div>
       ${e.order_ref ? `<div><div class="m-label">Order ref</div><div class="m-value mono">${esc(e.order_ref)}</div></div>` : ''}
       ${e.notes ? `<div><div class="m-label">Notes</div><div class="m-value">${esc(e.notes)}</div></div>` : ''}
     </div>
@@ -730,12 +753,12 @@ function expensePaneHtml(e, settings) {
     ${e.rationale ? `<div class="drawer-section-title">Why it's eligible</div><div class="drawer-rationale">${esc(e.rationale)}</div>` : ''}
     <div class="drawer-section-title">Receipt${e.receipt_original_name ? ` — ${esc(e.receipt_original_name)}` : ''}</div>
     ${e.receipt_id
-      ? `<div class="drawer-receipt"><iframe src="/api/receipts/${e.receipt_id}/file#toolbar=0" title="Receipt"></iframe></div>`
+      ? receiptViewer(e.receipt_id, e.receipt_mime, 'Receipt')
       : `<p class="inline-note" style="margin:0">No receipt file attached to this entry.</p>`}
     ${(e.payment_proofs || []).map(p => `
       <div class="drawer-section-title">Proof of payment — ${esc(p.name)}</div>
       <div class="g-fact good" style="margin:0 0 8px">${icon('check')} Paid by ${paidBy(p)}. Linked to this receipt and counted once.</div>
-      <div class="drawer-receipt short"><iframe src="/api/receipts/${p.id}/file#toolbar=0" title="Proof of payment"></iframe></div>`).join('')}
+      ${receiptViewer(p.id, p.mime, 'Proof of payment', 'short')}`).join('')}
     <div class="drawer-confirm" id="pane-confirm" hidden>
       <div style="font-weight:650;font-size:13px;margin-bottom:3px">Delete this expense forever?</div>
       <div style="font-size:12.5px;color:var(--ink-2);margin-bottom:10px">It disappears from your records and totals permanently. If you're declining it as not eligible, use <strong>Reject</strong> instead — that keeps it for your audit trail.</div>
@@ -761,6 +784,8 @@ function expensePaneHtml(e, settings) {
 function openExpensePane(e, settings, refresh) {
   openPane('expense:' + e.id, expensePaneHtml(e, settings), pane => {
     pane.onclick = actionHandler(async ev => {
+      const file = ev.target.closest('[data-open-file]');
+      if (file) { window.open(`/api/receipts/${file.dataset.openFile}/file`, '_blank'); return; }
       const go = ev.target.closest('[data-goto]');
       if (go) { ev.preventDefault(); refresh(Number(go.dataset.goto)); return; }
       const btn = ev.target.closest('button');
@@ -836,6 +861,15 @@ views.ledger = async function () {
   const stats = await api('/stats');
   const years = [...new Set(stats.byYear.map(y => y.year))];
   const total = rows.reduce((s, e) => s + e.amount, 0);
+  // The footer splits the total the same way Home does, so the two always reconcile.
+  const sumWhere = f => rows.filter(f).reduce((s, e) => s + e.amount, 0);
+  const recordOnlySum = sumWhere(e => isRecordOnly(e, settings));
+  const notApprovedSum = sumWhere(e => e.status !== 'approved');
+  const countedSum = sumWhere(e => e.status === 'approved' && !isRecordOnly(e, settings));
+  const footParts = recordOnlySum || notApprovedSum
+    ? [countedSum && `Counted ${money(countedSum)}`, recordOnlySum && `Records only (before HSA) ${money(recordOnlySum)}`,
+      notApprovedSum && `Not approved ${money(notApprovedSum)}`].filter(Boolean).join(' · ') + ` · Total ${money(total)}`
+    : `Total: ${money(total)}`;
 
   main.innerHTML = `
     <div class="page-head">
@@ -850,26 +884,26 @@ views.ledger = async function () {
     </div>
 
     <div class="filters">
-      <input type="search" id="lg-q" placeholder="Search…" value="${esc(ledgerFilters.q)}">
-      <select id="lg-status">
+      <input type="search" id="lg-q" placeholder="Search…" aria-label="Search the ledger" value="${esc(ledgerFilters.q)}">
+      <select id="lg-status" aria-label="Status">
         <option value="approved" ${ledgerFilters.status === 'approved' ? 'selected' : ''}>Approved</option>
         <option value="rejected" ${ledgerFilters.status === 'rejected' ? 'selected' : ''}>Rejected</option>
         <option value="" ${ledgerFilters.status === '' ? 'selected' : ''}>All statuses</option>
       </select>
-      <select id="lg-cat">
+      <select id="lg-cat" aria-label="Category">
         <option value="">All categories</option>
         ${(settings.categories || []).map(c => `<option ${ledgerFilters.category === c ? 'selected' : ''}>${c}</option>`).join('')}
       </select>
-      <select id="lg-year">
+      <select id="lg-year" aria-label="Year">
         <option value="">All years</option>
         ${years.map(y => `<option ${ledgerFilters.year === y ? 'selected' : ''}>${y}</option>`).join('')}
       </select>
-      <select id="lg-reimb">
+      <select id="lg-reimb" aria-label="Reimbursed">
         <option value="">Reimbursed &amp; not</option>
         <option value="no" ${ledgerFilters.reimbursed === 'no' ? 'selected' : ''}>Not reimbursed</option>
         <option value="yes" ${ledgerFilters.reimbursed === 'yes' ? 'selected' : ''}>Reimbursed</option>
       </select>
-      ${settings.hsa_established ? `<select id="lg-prehsa">
+      ${settings.hsa_established ? `<select id="lg-prehsa" aria-label="Date">
         <option value="">Any date</option>
         <option value="1" ${ledgerFilters.pre_hsa ? 'selected' : ''}>Before HSA opened</option>
       </select>` : ''}
@@ -878,14 +912,14 @@ views.ledger = async function () {
 
     <div class="card"><div class="table-wrap"><table class="data" id="lg-table">
       <thead><tr>
-        <th style="width:26px"><input type="checkbox" id="lg-all" title="Select all"></th>
+        <th style="width:26px"><input type="checkbox" id="lg-all" title="Select all" aria-label="Select all"></th>
         <th data-sort="date">Date</th><th class="col-extra" data-sort="provider">Provider</th><th data-sort="description">Description</th><th class="col-extra" data-sort="category">Category</th>
         <th class="num" data-sort="amount" data-type="num">Amount</th><th data-sort="status">Status</th><th class="col-extra" data-sort="reimbursed">Reimbursed</th>
       </tr></thead>
       <tbody>
         ${rows.map(e => `
         <tr class="row-click ${paneKey === 'expense:' + e.id ? 'row-selected' : ''}" data-id="${e.id}">
-          <td><input type="checkbox" class="lg-check" data-id="${e.id}" ${ledgerSelected.has(e.id) ? 'checked' : ''}></td>
+          <td><input type="checkbox" class="lg-check" data-id="${e.id}" aria-label="Select ${esc(e.description)}" ${ledgerSelected.has(e.id) ? 'checked' : ''}></td>
           <td style="white-space:nowrap" data-v="${esc(e.date)}">${fmtDate(e.date)}${beforeEstablished(e, settings) ? ` ${preHsaChip(e, settings)}` : ''}${e.duplicates?.length ? ` ${dupChip(e)}` : ''}</td>
           <td class="col-extra">${esc(e.provider)}</td>
           <td>${esc(e.description)}</td>
@@ -895,7 +929,7 @@ views.ledger = async function () {
           <td class="col-extra" data-v="${e.reimbursed ? esc(e.date_reimbursed || '9999') : ''}">${e.reimbursed ? `<span class="good-text">${icon('check')} ${fmtDate(e.date_reimbursed)}</span>` : '<span class="muted">No</span>'}</td>
         </tr>`).join('') || '<tr><td colspan="8" class="empty">No matching expenses</td></tr>'}
       </tbody>
-      ${rows.length ? `<tfoot><tr><td colspan="99" style="text-align:right">Total: ${money(total)}</td></tr></tfoot>` : ''}
+      ${rows.length ? `<tfoot><tr><td colspan="99" style="text-align:right">${footParts}</td></tr></tfoot>` : ''}
     </table></div></div>
 
     <div class="bulkbar" id="lg-bulkbar" hidden>
@@ -1016,7 +1050,7 @@ views.ledger = async function () {
     if (action === 'category') {
       openModal(`
         <h3>Change category for ${ids.length} item${ids.length === 1 ? '' : 's'}</h3>
-        <div class="field"><label>Category</label>
+        <div class="field"><label for="m-bulk-cat">Category</label>
           <select id="m-bulk-cat">${(settings.categories || []).map(c => `<option>${c}</option>`).join('')}</select></div>
         <div class="m-actions">
           <button class="btn" data-close>Cancel</button>
@@ -1149,7 +1183,7 @@ function receiptPaneHtml(r, items) {
     <button class="btn small ghost drawer-close" title="Close" aria-label="Close">${icon('x')}</button>
   </div>
   <div class="drawer-body">
-    <div class="drawer-receipt"><iframe src="/api/receipts/${r.id}/file#toolbar=0" title="Receipt"></iframe></div>
+    ${receiptViewer(r.id, r.mime, 'Receipt')}
     ${paymentSectionHtml(r)}
     ${receiptFactsHtml(r)}
     <div class="drawer-section-title">Line items</div>
@@ -1221,6 +1255,8 @@ async function openReceiptPane(id, settings, refresh) {
         .catch(err => { toastError(err); ev.target.value = ''; });
     };
     pane.onclick = actionHandler(async ev => {
+      const file = ev.target.closest('[data-open-file]');
+      if (file) { window.open(`/api/receipts/${file.dataset.openFile}/file`, '_blank'); return; }
       const go = ev.target.closest('[data-open-receipt]');
       if (go) { ev.preventDefault(); refresh(Number(go.dataset.openReceipt)); return; }
       const btn = ev.target.closest('button');
@@ -1327,8 +1363,10 @@ views.discarded = async function () {
     if (btn.dataset.act === 'view-receipt') window.open(`/api/receipts/${btn.dataset.rid}/file`, '_blank');
     if (btn.dataset.act === 'requeue') {
       await api(`/discarded/${btn.dataset.id}/requeue`, { method: 'POST' });
-      toast('Moved to review queue');
-      navigate('review');
+      await refreshBadge();
+      const waiting = Number($('#review-badge').textContent) || 0;
+      toast(`Moved to Review — ${waiting} item${waiting === 1 ? '' : 's'} waiting`);
+      views.discarded();
     }
   });
 };
@@ -1349,7 +1387,7 @@ views.settings = async function () {
       <div class="card settings-section">
         <h3>Your HSA</h3>
         <div class="s-sub">Only expenses from on or after the day your HSA was established can be reimbursed. Anything dated earlier is flagged and needs a second confirmation to approve.</div>
-        <div class="field" style="max-width:220px"><label>Date your HSA was established</label><input type="date" id="set-hsa-established" value="${esc(s.hsa_established || '')}"></div>
+        <div class="field" style="max-width:220px"><label for="set-hsa-established">Date your HSA was established</label><input type="date" id="set-hsa-established" value="${esc(s.hsa_established || '')}"></div>
         <div id="pre-hsa-summary"></div>
         <div class="inline-note" style="margin:0">Find it on your HSA provider's welcome email, first statement, or account details page. <strong>Moved money in from an earlier HSA?</strong> If it was a direct transfer or rollover and the old account never hit $0, use the <em>earlier</em> account's start date — older expenses may still qualify.</div>
       </div>
@@ -1362,7 +1400,7 @@ views.settings = async function () {
             <span><strong>Claude (Anthropic) API key</strong> (recommended)
             <span class="r-sub">Create a key at <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> and paste it below. Uses Claude's Sonnet model, kept up to date automatically — costs pennies per receipt.</span></span></label>
           <div class="field ai-fields" data-provider="anthropic-api" ${s.ai_provider !== 'anthropic-api' ? 'hidden' : ''}>
-            <label>Anthropic API key</label>
+            <label for="set-api-key">Anthropic API key</label>
             <input type="password" id="set-api-key" value="${esc(s.anthropic_api_key)}" placeholder="sk-ant-…">
             <div class="test-row"><button class="btn small ai-test">Test connection</button><span class="test-result"></span></div>
           </div>
@@ -1370,7 +1408,7 @@ views.settings = async function () {
             <span><strong>ChatGPT (OpenAI) API key</strong>
             <span class="r-sub">Same idea with OpenAI's models. Create a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a> and paste it below. Uses OpenAI's small "mini" model, kept up to date automatically — costs pennies per receipt.</span></span></label>
           <div class="field ai-fields" data-provider="openai-api" ${s.ai_provider !== 'openai-api' ? 'hidden' : ''}>
-            <label>OpenAI API key</label>
+            <label for="set-openai-key">OpenAI API key</label>
             <input type="password" id="set-openai-key" value="${esc(s.openai_api_key)}" placeholder="sk-…">
             <div class="test-row"><button class="btn small ai-test">Test connection</button><span class="test-result"></span></div>
           </div>
@@ -1385,11 +1423,11 @@ views.settings = async function () {
         <div class="s-sub">Point this at a dedicated free email account (e.g. a new Gmail with an <a href="https://myaccount.google.com/apppasswords" target="_blank">app password</a>) and forward receipts to it. The app polls it over IMAP — nothing is exposed publicly, and it only runs while the app is running.</div>
         <div class="field"><label><input type="checkbox" id="set-email-enabled" ${s.email_enabled ? 'checked' : ''} style="width:auto;margin-right:6px">Enable email ingestion</label></div>
         <div id="email-fields" ${s.email_enabled ? '' : 'hidden'}>
-          <div class="field"><label>IMAP host</label><input id="set-email-host" value="${esc(s.email_host)}"></div>
-          <div class="field"><label>IMAP port</label><input id="set-email-port" type="number" value="${esc(s.email_port)}"></div>
-          <div class="field"><label>Email address</label><input id="set-email-user" value="${esc(s.email_user)}" placeholder="my-hsa-receipts@gmail.com"></div>
-          <div class="field"><label>App password</label><input id="set-email-pass" type="password" value="${esc(s.email_password)}"></div>
-          <div class="field"><label>Check every (minutes)</label><input id="set-email-poll" type="number" value="${esc(s.email_poll_minutes)}"></div>
+          <div class="field"><label for="set-email-host">IMAP host</label><input id="set-email-host" value="${esc(s.email_host)}"></div>
+          <div class="field"><label for="set-email-port">IMAP port</label><input id="set-email-port" type="number" value="${esc(s.email_port)}"></div>
+          <div class="field"><label for="set-email-user">Email address</label><input id="set-email-user" value="${esc(s.email_user)}" placeholder="my-hsa-receipts@gmail.com"></div>
+          <div class="field"><label for="set-email-pass">App password</label><input id="set-email-pass" type="password" value="${esc(s.email_password)}"></div>
+          <div class="field"><label for="set-email-poll">Check every (minutes)</label><input id="set-email-poll" type="number" value="${esc(s.email_poll_minutes)}"></div>
           <button class="btn small" id="email-check">Check inbox now</button><span class="test-result" id="email-test-result"></span>
           ${emailStat.lastCheck?.at ? `<div class="inline-note" style="margin-top:8px">Last check: ${new Date(emailStat.lastCheck.at).toLocaleString()} — ${emailStat.lastCheck.error ? 'error: ' + esc(emailStat.lastCheck.error) : `processed ${emailStat.lastCheck.result.processed}, skipped ${emailStat.lastCheck.result.skipped}`}</div>` : ''}
           ${emailStat.recentSkipped?.length ? `
@@ -1547,17 +1585,29 @@ views.settings = async function () {
 
 // ---------------- Modals ----------------
 let onModalClose = null; // set by dialogs that await an answer, so dismissing still settles them
+let modalReturnFocus = null; // where keyboard focus goes back to when the dialog closes
+const modalOpen = () => $('#modal-backdrop').classList.contains('show');
 function openModal(html) {
   onModalClose = null;
   const back = $('#modal-backdrop');
-  $('#modal').innerHTML = html;
+  const modal = $('#modal');
+  if (!modalOpen()) modalReturnFocus = document.activeElement;
+  modal.innerHTML = html;
+  const title = modal.querySelector('h3');
+  if (title) { title.id = 'modal-title'; modal.setAttribute('aria-labelledby', 'modal-title'); }
   back.classList.add('show');
-  $('#modal').querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeModal));
+  modal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeModal));
+  // Focus the first field so typing works right away. Dialogs without fields are
+  // questions (duplicate, delete…): focus Cancel, so a stray Enter decides nothing.
+  (modal.querySelector('input, select, textarea') || modal.querySelector('[data-close]') || modal.querySelector('button'))?.focus();
 }
 function closeModal() {
+  if (!modalOpen()) return;
   $('#modal-backdrop').classList.remove('show');
   const f = onModalClose;
   onModalClose = null;
+  if (modalReturnFocus?.isConnected) modalReturnFocus.focus();
+  modalReturnFocus = null;
   f?.();
 }
 $('#modal-backdrop').addEventListener('click', e => { if (e.target.id === 'modal-backdrop') closeModal(); });
@@ -1567,19 +1617,19 @@ function editExpenseModal(item, settings, onSave, { showApprove = false, onAppro
   openModal(`
     <h3>${isNew ? 'Add expense' : 'Edit expense'}</h3>
     <div class="row2">
-      <div class="field"><label>Date <span class="req">*</span></label><input type="date" id="m-date" value="${esc(item?.date?.slice(0, 10) || localToday())}"></div>
-      <div class="field"><label>Amount ($) <span class="req">*</span></label><input type="number" step="0.01" min="0" id="m-amount" placeholder="0.00" value="${item?.amount ?? ''}"></div>
+      <div class="field"><label for="m-date">Date <span class="req">*</span></label><input type="date" id="m-date" value="${esc(item?.date?.slice(0, 10) || localToday())}"></div>
+      <div class="field"><label for="m-amount">Amount ($) <span class="req">*</span></label><input type="number" step="0.01" min="0" id="m-amount" placeholder="0.00" value="${item?.amount ?? ''}"></div>
     </div>
-    <div class="field"><label>Provider</label><input id="m-provider" value="${esc(item?.provider || '')}"></div>
-    <div class="field"><label>Description <span class="req">*</span></label><input id="m-desc" value="${esc(item?.description || '')}"></div>
+    <div class="field"><label for="m-provider">Provider</label><input id="m-provider" value="${esc(item?.provider || '')}"></div>
+    <div class="field"><label for="m-desc">Description <span class="req">*</span></label><input id="m-desc" value="${esc(item?.description || '')}"></div>
     <div class="row2">
-      <div class="field"><label>Category</label>
+      <div class="field"><label for="m-cat">Category</label>
         <select id="m-cat">${(settings.categories || ['Dental', 'Medical', 'Vision', 'Pharmacy', 'Other']).map(c => `<option ${item?.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select>
       </div>
-      <div class="field"><label>Payment method</label><input id="m-pay" value="${esc(item?.payment_method || '')}"></div>
+      <div class="field"><label for="m-pay">Payment method</label><input id="m-pay" value="${esc(item?.payment_method || '')}"></div>
     </div>
-    <div class="field"><label>Order / receipt ref</label><input id="m-order" value="${esc(item?.order_ref || '')}"></div>
-    <div class="field"><label>Notes</label><textarea id="m-notes" rows="2" style="width:100%">${esc(item?.notes || '')}</textarea></div>
+    <div class="field"><label for="m-order">Order / receipt ref</label><input id="m-order" value="${esc(item?.order_ref || '')}"></div>
+    <div class="field"><label for="m-notes">Notes</label><textarea id="m-notes" rows="2" style="width:100%">${esc(item?.notes || '')}</textarea></div>
     <div class="m-actions">
       <button class="btn" data-close>Cancel</button>
       ${showApprove ? '<button class="btn good" id="m-save-approve">Save &amp; approve</button>' : ''}
@@ -1620,7 +1670,7 @@ function editExpenseModal(item, settings, onSave, { showApprove = false, onAppro
 function reimburseModal(onConfirm) {
   openModal(`
     <h3>Mark reimbursed</h3>
-    <div class="field"><label>Date reimbursed from HSA</label>
+    <div class="field"><label for="m-reimb-date">Date reimbursed from HSA</label>
       <input type="date" id="m-reimb-date" value="${localToday()}"></div>
     <div class="m-actions">
       <button class="btn" data-close>Cancel</button>
