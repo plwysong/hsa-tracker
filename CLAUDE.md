@@ -41,4 +41,5 @@ Deploy command (used in step 5):
 - Commits must use the repo-local git identity (already configured: the GitHub noreply email). Never commit with a personal email.
 - Never commit: `data/`, any `*.db`, receipt files, `src/seed-data.json` (legacy), `CLAUDE.local.md`, or anything containing real names of medical providers, order numbers, addresses, or API keys. The .gitignore enforces this — do not weaken it.
 - Anything user-specific belongs in `CLAUDE.local.md` (gitignored), never in this file or the README.
+- **Real data never goes into code comments, commit messages, release notes, or test fixtures.** When a real receipt drives a fix, describe it generically and use anonymized stand-ins (see test/fixtures). Before pushing, grep the diff and message for provider names, patient names, addresses, card digits and transaction ids. (v1.7's comments and a commit message once named a real dental practice; the commits were rewritten before the repo went public.)
 - Before any force-push or history operation, remember: GitHub retains orphaned commits and lists their SHAs in the public activity feed — history rewrites do not remove data from GitHub's servers.
