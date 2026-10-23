@@ -6,6 +6,7 @@ import path from 'node:path';
 import { db, RECEIPTS_DIR, sha256File, audit, localToday, cents } from '../db.js';
 import { extractText } from './extract.js';
 import { triageReceipt } from './triage.js';
+import { allocateDiscount, recordDocument, linkPayments } from './payments.js';
 
 const jobs = new Map();
 let jobCounter = 0;
@@ -84,7 +85,7 @@ export function retriageReceipt(receiptId) {
       if (!hasText(receipt.raw_text)) throw new Error('Stored, but no readable text could be extracted — add line items manually with "Add expense".');
       job.status = 'triaging';
     }
-    const triage = await triageReceipt(receipt.raw_text);
+    const triage = paidPrices(await triageReceipt(receipt.raw_text));
     // Replace this receipt's previous *pending* candidates and discards so re-runs don't stack
     // duplicates. Rows the user created themselves (manual adds, re-queued discards) are kept —
     // a re-triage must never wipe an explicit user decision.
@@ -100,7 +101,7 @@ export function retriageReceipt(receiptId) {
       // Only items that would become expenses can match an already-decided expense
       // amount. not_eligible items always pass through to the discarded log.
       if (item.verdict === 'not_eligible') return true;
-      const i = kept.findIndex(a => Math.abs(a - item.amount) < 0.005);
+      const i = kept.findIndex(a => matchesAmount(a, item));
       if (i === -1) return true;
       kept.splice(i, 1);
       skipped++;
@@ -109,7 +110,7 @@ export function retriageReceipt(receiptId) {
     insertTriageResults(job, receiptId, triage, receipt.source);
     job.status = 'done';
     const keptNote = skipped ? `${skipped} item${skipped === 1 ? '' : 's'} you already decided left untouched. ` : '';
-    job.detail = keptNote + (triage.ai_error
+    job.detail = keptNote + linkNote(job) + (triage.ai_error
       ? `AI triage unavailable — used keyword fallback. (${triage.ai_error})`
       : (triage.document_summary || ''));
     audit('retriage', { receiptId, queued: job.queued, discarded: job.discarded, provider: triage.ai_provider });
@@ -122,6 +123,13 @@ export function retriageReceipt(receiptId) {
 }
 
 const hasText = (t) => !!t && t.trim().length >= 10;
+
+// Lines carry what was actually paid: a document-level discount is spread across them.
+const paidPrices = triage => ({ ...triage, items: allocateDiscount(triage.items, triage.total_paid, triage.discounts) });
+// An already-tracked amount matches a line at either its paid or its listed price.
+const matchesAmount = (a, item) => Math.abs(a - item.amount) < 0.005 || (item.list_amount != null && Math.abs(a - item.list_amount) < 0.005);
+const linkNote = job => (job.linkedPayment ? 'Linked with its proof of payment — counted once. ' : '')
+  + (job.paymentOnly && !job.linkedPayment ? 'Proof of payment — waiting in Review for its itemized receipt. ' : '');
 
 // The receipt's meta column holds source details (email headers etc.) plus the
 // extraction outcome; strip the outcome so it is rewritten, not stacked.
@@ -149,8 +157,8 @@ async function extractInto(receiptId, buffer, mime, originalName, sourceDetail) 
 function insertTriageResults(job, receiptId, triage, sourceType) {
   const insExpense = db.prepare(`
     INSERT INTO expenses (date, provider, category, description, amount, payment_method, status,
-      confidence, rationale, source_type, receipt_id, order_ref)
-    VALUES (?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?)
+      confidence, rationale, source_type, receipt_id, order_ref, list_amount)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, ?)
   `);
   const insDiscarded = db.prepare('INSERT INTO discarded (receipt_id, description, amount, reason) VALUES (?, ?, ?, ?)');
   const docDate = triage.purchase_date || localToday();
@@ -162,10 +170,13 @@ function insertTriageResults(job, receiptId, triage, sourceType) {
       insExpense.run(item.date || docDate, triage.provider || 'Unknown', item.category || 'Other',
         item.description, cents(item.amount), triage.payment_method || null,
         item.confidence || 'Low', item.rationale || '', sourceType, receiptId,
-        triage.order_ref ? String(triage.order_ref) : null);
+        triage.order_ref ? String(triage.order_ref) : null, item.list_amount ?? null);
       job.queued++;
     }
   }
+  recordDocument(receiptId, triage);
+  job.paymentOnly = triage.document_type === 'payment_only';
+  job.linkedPayment = linkPayments(receiptId).length > 0;
 }
 
 async function processJob(job, buffer, meta) {
@@ -233,13 +244,13 @@ async function extractAndTriage(job, receiptId, buffer, mime, originalName, sour
   }
 
   job.status = 'triaging';
-  const triage = await triageReceipt(text);
+  const triage = paidPrices(await triageReceipt(text));
 
   // An email with no attachment whose body holds no purchases — a security
   // alert, a newsletter — is not a receipt. File it on the skipped-emails list
   // that Settings shows, drop the placeholder receipt, and leave the message in
   // the inbox. Its message-id record stays so the poller won't fetch it again.
-  if (sourceDetail.bodyOnly && !triage.items.length) {
+  if (sourceDetail.bodyOnly && !triage.items.length && triage.document_type !== 'payment_only') {
     const reason = 'No purchases found in the message.';
     const r = db.prepare('SELECT filename, sha256 FROM receipts WHERE id = ?').get(receiptId);
     db.exec('BEGIN');
@@ -272,7 +283,7 @@ async function extractAndTriage(job, receiptId, buffer, mime, originalName, sour
         // an already-tracked amount. not_eligible items always pass through to the
         // discarded log — never silently dropped by dedup.
         if (item.verdict === 'not_eligible') return true;
-        const i = existing.findIndex(a => Math.abs(a - item.amount) < 0.005);
+        const i = existing.findIndex(a => matchesAmount(a, item));
         if (i === -1) return true;
         existing.splice(i, 1);
         dupes++;
@@ -293,7 +304,7 @@ async function extractAndTriage(job, receiptId, buffer, mime, originalName, sour
   insertTriageResults(job, receiptId, triage, source);
 
   job.status = 'done';
-  job.detail = dupNote + (triage.ai_error
+  job.detail = dupNote + linkNote(job) + (triage.ai_error
     ? `AI triage unavailable — used keyword fallback. Re-check results. (${triage.ai_error})`
     : (triage.document_summary || ''));
   audit('ingest_done', { file: originalName, receiptId, queued: job.queued, discarded: job.discarded, provider: triage.ai_provider });

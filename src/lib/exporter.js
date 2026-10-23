@@ -12,25 +12,52 @@ function allExpenses(status = null, ids = null) {
   if (ids && ids.length) clauses.push(`e.id IN (${ids.map(n => Number(n)).join(',')})`);
   const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
   return db.prepare(`
-    SELECT e.*, r.filename AS receipt_filename, r.original_name AS receipt_original_name
+    SELECT e.*, r.filename AS receipt_filename, r.original_name AS receipt_original_name,
+      (SELECT group_concat(p.filename, '; ') FROM receipts p WHERE p.payment_for = e.receipt_id) AS payment_proof
     FROM expenses e LEFT JOIN receipts r ON r.id = e.receipt_id
     ${where}
     ORDER BY e.date, e.id
   `).all();
 }
 
+// A receipt and its linked proof of payment travel together: in every zip they
+// share one folder named for the purchase, e.g. "2026-10-08 Harbor View Dentistry (#12)".
+// Receipts without a linked payment stay loose, as before.
+function receiptZipPaths(receiptIds = null) {
+  const all = db.prepare(`SELECT r.id, r.filename, r.payment_for, r.doc_date, r.provider, r.received_at,
+    (SELECT MIN(date) FROM expenses e WHERE e.receipt_id = r.id) AS line_date,
+    (SELECT provider FROM expenses e WHERE e.receipt_id = r.id LIMIT 1) AS line_provider FROM receipts r`).all();
+  const byId = new Map(all.map(r => [r.id, r]));
+  const folderOf = new Map();
+  for (const p of all) {
+    const r = p.payment_for && byId.get(p.payment_for);
+    if (!r) continue;
+    const name = `${r.doc_date || r.line_date || String(r.received_at).slice(0, 10)} ${r.provider || r.line_provider || 'Receipt'}`
+      .replace(/[\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim().slice(0, 80) + ` (#${r.id})`;
+    folderOf.set(r.id, name);
+    folderOf.set(p.id, name);
+  }
+  // A requested receipt brings its linked payment (or the receipt it pays for) along.
+  let wanted = all;
+  if (receiptIds) {
+    const ids = new Set(receiptIds);
+    for (const r of all) if (ids.has(r.payment_for)) ids.add(r.id);
+    for (const id of [...ids]) { const pf = byId.get(id)?.payment_for; if (pf) ids.add(pf); }
+    wanted = all.filter(r => ids.has(r.id));
+  }
+  return wanted.filter(r => r.filename)
+    .map(r => ({ file: r.filename, zipPath: folderOf.has(r.id) ? `${folderOf.get(r.id)}/${r.filename}` : r.filename }));
+}
+
 /** Streams a zip containing just the receipt files behind the given expense ids. */
 export function receiptsZip(ids, res) {
-  const rows = allExpenses(null, ids).filter(e => e.receipt_filename);
-  const seen = new Set();
+  const receiptIds = [...new Set(allExpenses(null, ids).map(e => e.receipt_id).filter(Boolean))];
   const archive = archiver('zip', { zlib: { level: 9 } });
   archive.pipe(res);
   archive.append(ledgerCsv({ approvedOnly: false, ids }), { name: 'selected-expenses.csv' });
-  for (const e of rows) {
-    if (seen.has(e.receipt_filename)) continue;
-    seen.add(e.receipt_filename);
-    const p = path.join(RECEIPTS_DIR, e.receipt_filename);
-    if (existsSync(p)) archive.file(p, { name: e.receipt_filename });
+  for (const { file, zipPath } of receiptZipPaths(receiptIds)) {
+    const p = path.join(RECEIPTS_DIR, file);
+    if (existsSync(p)) archive.file(p, { name: zipPath });
   }
   return archive.finalize();
 }
@@ -47,14 +74,14 @@ function csvEscape(v) {
 export function ledgerCsv({ approvedOnly = true, ids = null } = {}) {
   const rows = allExpenses(approvedOnly ? 'approved' : null, ids);
   const header = ['Date', 'Provider', 'Category', 'Description', 'Amount', 'Payment Method', 'Status',
-    'Confidence', 'Eligibility Rationale', 'Counts Toward Withdrawals', 'Reimbursed from HSA', 'Date Reimbursed', 'Source', 'Order/Receipt Ref', 'Receipt File', 'Notes'];
+    'Confidence', 'Eligibility Rationale', 'Counts Toward Withdrawals', 'Reimbursed from HSA', 'Date Reimbursed', 'Source', 'Order/Receipt Ref', 'Receipt File', 'Proof of Payment', 'List Price', 'Notes'];
   const lines = [header.join(',')];
   const est = establishedDate();
   for (const e of rows) {
     const counts = e.status !== 'approved' ? '' : isRecordOnly(e, est) ? 'No - dated before HSA established (record only)' : 'Yes';
     lines.push([e.date, e.provider, e.category, e.description, e.amount?.toFixed(2), e.payment_method,
       e.status, e.confidence, e.rationale, counts, e.reimbursed ? 'Yes' : 'No', e.date_reimbursed,
-      e.source_type, e.order_ref, e.receipt_filename, e.notes].map(csvEscape).join(','));
+      e.source_type, e.order_ref, e.receipt_filename, e.payment_proof, e.list_amount != null ? e.list_amount.toFixed(2) : '', e.notes].map(csvEscape).join(','));
   }
   return lines.join('\n');
 }
@@ -63,7 +90,8 @@ export function fullJson() {
   return JSON.stringify({
     exported_at: new Date().toISOString(),
     expenses: allExpenses(),
-    receipts: db.prepare('SELECT id, filename, original_name, mime, sha256, source, received_at, meta FROM receipts ORDER BY id').all(),
+    receipts: db.prepare(`SELECT id, filename, original_name, mime, sha256, source, received_at, meta,
+      doc_kind, doc_date, provider, amount_paid, discounts, payment_ref, payment_for FROM receipts ORDER BY id`).all(),
     discarded: db.prepare('SELECT * FROM discarded ORDER BY id').all(),
     audit_log: db.prepare('SELECT * FROM audit_log ORDER BY id').all(),
   }, null, 2);
@@ -77,10 +105,9 @@ export async function fullZip(res) {
   archive.append(ledgerCsv({ approvedOnly: false }), { name: 'HSA-all-records.csv' });
   archive.append(fullJson(), { name: 'HSA-full-backup.json' });
   archive.append(await summaryPdfBuffer(), { name: 'HSA-summary.pdf' });
-  const receipts = db.prepare('SELECT filename FROM receipts').all();
-  for (const r of receipts) {
-    const p = path.join(RECEIPTS_DIR, r.filename);
-    if (r.filename && existsSync(p)) archive.file(p, { name: `receipts/${r.filename}` });
+  for (const { file, zipPath } of receiptZipPaths()) {
+    const p = path.join(RECEIPTS_DIR, file);
+    if (existsSync(p)) archive.file(p, { name: `receipts/${zipPath}` });
   }
   archive.finalize();
   return archive;
@@ -174,7 +201,9 @@ export function summaryPdfBuffer() {
     for (const e of list) {
       const rowData = {
         date: usDate(e.date), provider: e.provider || '', category: e.category || '',
-        description: e.description || '', amount: money(e.amount), reimbursed: e.reimbursed ? 'Yes' : 'No',
+        description: (e.description || '') + (e.list_amount != null ? ` (after discount; list ${money(e.list_amount)})` : '')
+          + (e.payment_proof ? ' · proof of payment on file' : ''),
+        amount: money(e.amount), reimbursed: e.reimbursed ? 'Yes' : 'No',
       };
       const heights = cols.map(c => doc.heightOfString(String(rowData[c.key]), { width: c.w - 6 }));
       const rowH = Math.max(...heights) + 4;

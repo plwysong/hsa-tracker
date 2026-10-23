@@ -178,7 +178,24 @@ if (getSetting('ai_provider') === 'claude-cli') setSetting('ai_provider', 'anthr
 // A model is always concretely set — empty values from older versions get the default.
 if (!getSetting('anthropic_model')) setSetting('anthropic_model', 'claude-sonnet-5');
 if (!getSetting('openai_model')) setSetting('openai_model', 'gpt-4o-mini');
-// Migration: approvals that knowingly override the HSA establishment date are flagged on the row.
-if (!db.prepare('PRAGMA table_info(expenses)').all().some(c => c.name === 'pre_hsa_override')) {
-  db.exec('ALTER TABLE expenses ADD COLUMN pre_hsa_override INTEGER DEFAULT 0');
+function addColumn(table, column, definition) {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
 }
+// Migration: approvals that knowingly override the HSA establishment date are flagged on the row.
+addColumn('expenses', 'pre_hsa_override', 'INTEGER DEFAULT 0');
+// Migration: what a line cost before a document-level discount was spread across it.
+addColumn('expenses', 'list_amount', 'REAL');
+// Migration: document-level facts read from each receipt. doc_kind is 'itemized'
+// (lists what was bought) or 'payment' (only proves a payment — a card slip). A
+// payment document creates no expenses; payment_for links it to the itemized
+// receipt it pays for, so the two are kept and counted together.
+addColumn('receipts', 'doc_kind', 'TEXT');
+addColumn('receipts', 'doc_date', 'TEXT');
+addColumn('receipts', 'provider', 'TEXT');
+addColumn('receipts', 'amount_paid', 'REAL');
+addColumn('receipts', 'discounts', 'REAL');
+addColumn('receipts', 'payment_ref', 'TEXT');
+addColumn('receipts', 'payment_for', 'INTEGER');
+addColumn('receipts', 'payment_unlinked', 'INTEGER DEFAULT 0'); // user unlinked it: never auto-link again

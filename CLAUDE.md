@@ -7,11 +7,13 @@ Local-first Mac desktop app (Electron + Express + Node built-in `node:sqlite`, n
 - `npm start` — headless browser mode at http://localhost:8321 (auto-quits ~3 min after the last tab closes; heartbeats from the page keep it alive)
 - `npm run dev` — same, with `--watch` and auto-exit disabled (`HSA_NO_AUTOEXIT=1`), on **port 8322** so it never collides with the installed app on 8321 (open http://localhost:8322)
 - `npm run app` — the real desktop window (Electron)
+- `npm test` — regression tests (node:test, throwaway database, stubbed AI; fixtures in test/ are anonymized — the repo is public). Run before every release.
 - `npm run installer` — full production build: packages the app, ad-hoc signs it, produces `dist/HSA Tracker Installer.dmg`
 - `npm run make-launcher` — (legacy) rebuilds a Desktop launcher app; normally unused since the app installs to /Applications
 
 ## Release process
 
+0. `npm test` must pass.
 1. Bump `version` in package.json (semver — the in-app update notice compares against GitHub releases)
 2. `npm run installer`
 3. Commit + push first, so the release tag points at the commit that was built.

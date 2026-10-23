@@ -1,6 +1,6 @@
 {
   "name": "hsa-tracker",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Local-first HSA eligible expense tracker with AI receipt triage",
   "type": "module",
   "main": "electron.js",
@@ -9,6 +9,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "test": "node --test --no-warnings test/*.test.js",
     "start": "node server.js",
     "app": "electron .",
     "dev": "HSA_NO_AUTOEXIT=1 PORT=8322 node --watch server.js",
@@ -31,6 +32,7 @@
       "!CLAUDE.local.md",
       "!ROADMAP.md",
       "!.claude/**",
+      "!test/**",
       "!src/seed-data.json"
     ],
     "mac": {

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { existsSync, unlinkSync } from 'node:fs';
 import { db, RECEIPTS_DIR, getSetting, setSetting, audit, establishedDate, countsSql, recordOnlySql, localToday, cents } from '../db.js';
 import { ingestDocument, retriageReceipt, listJobs, clearFinishedJobs } from '../lib/ingest.js';
+import { linkPayments } from '../lib/payments.js';
 import { isSupported } from '../lib/extract.js';
 import { testProvider } from '../lib/triage.js';
 import { checkEmailNow, emailStatus, restartEmailPolling } from '../lib/email.js';
@@ -202,6 +203,7 @@ api.get('/expenses', wrap((req, res) => {
     FROM expenses e LEFT JOIN receipts r ON r.id = e.receipt_id
     ${where} ORDER BY e.date DESC, e.id DESC
   `).all(...params);
+  for (const r of rows) r.payment_proofs = r.receipt_id ? paymentProofs(r.receipt_id) : [];
   res.json(withDuplicates(rows));
 }));
 
@@ -211,6 +213,7 @@ api.get('/expenses/:id(\\d+)', wrap((req, res) => {
     FROM expenses e LEFT JOIN receipts r ON r.id = e.receipt_id WHERE e.id = ?
   `).get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
+  row.payment_proofs = row.receipt_id ? paymentProofs(row.receipt_id) : [];
   res.json(withDuplicates([row])[0]);
 }));
 
@@ -394,7 +397,10 @@ api.post('/jobs/clear', wrap((req, res) => { clearFinishedJobs(req.body || {}); 
 api.get('/receipts', wrap((req, res) => {
   const rows = db.prepare(`
     SELECT r.id, r.filename, r.original_name, r.mime, r.source, r.received_at, r.meta,
+      r.doc_kind, r.doc_date, r.provider, r.amount_paid, r.discounts, r.payment_ref, r.payment_for, r.payment_unlinked,
       (length(trim(r.raw_text)) >= 10) AS has_text,
+      ROUND((SELECT COALESCE(SUM(amount), 0) FROM expenses e WHERE e.receipt_id = r.id AND e.status != 'rejected')
+        + (SELECT COALESCE(SUM(amount), 0) FROM discarded d WHERE d.receipt_id = r.id), 2) AS lines_total,
       (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id) AS expense_count,
       (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id AND e.status = 'approved') AS approved_count,
       (SELECT COUNT(*) FROM expenses e WHERE e.receipt_id = r.id AND e.status = 'pending_review') AS pending_count,
@@ -402,6 +408,11 @@ api.get('/receipts', wrap((req, res) => {
       (SELECT COUNT(*) FROM discarded d WHERE d.receipt_id = r.id) AS discarded_count
     FROM receipts r ORDER BY r.received_at DESC, r.id DESC
   `).all();
+  const byId = new Map(rows.map(r => [r.id, r]));
+  for (const r of rows) {
+    r.payments = rows.filter(p => p.payment_for === r.id).map(p => ({ id: p.id, name: p.original_name || p.filename, payment_ref: p.payment_ref, amount_paid: p.amount_paid }));
+    if (r.payment_for) { const t = byId.get(r.payment_for); r.payment_for_name = t ? (t.original_name || t.filename) : null; }
+  }
   res.json(rows);
 }));
 
@@ -438,6 +449,7 @@ api.delete('/receipts/:id', wrap((req, res) => {
     db.prepare('DELETE FROM expenses WHERE receipt_id = ?').run(r.id);
     db.prepare('DELETE FROM discarded WHERE receipt_id = ?').run(r.id);
     db.prepare('DELETE FROM receipts WHERE id = ?').run(r.id);
+    db.prepare('UPDATE receipts SET payment_for = NULL WHERE payment_for = ?').run(r.id);
     if (r.sha256) db.prepare("DELETE FROM processed_sources WHERE kind = 'file_sha256' AND ref = ?").run(r.sha256);
     db.exec('COMMIT');
   } catch (err) {
@@ -450,6 +462,52 @@ api.delete('/receipts/:id', wrap((req, res) => {
   }
   audit('receipt_delete', { id: r.id, file: r.original_name || r.filename, source: r.source, ...counts });
   res.json({ ok: true, ...counts });
+}));
+
+// ---------- Proof of payment ----------
+// A payment-only document (card slip) backs an itemized receipt instead of
+// creating an expense. Auto-linked at ingest; these let the user fix or override.
+function paymentProofs(receiptId) {
+  return db.prepare('SELECT id, original_name, filename, payment_ref, amount_paid FROM receipts WHERE payment_for = ?').all(receiptId)
+    .map(p => ({ id: p.id, name: p.original_name || p.filename, filename: p.filename, payment_ref: p.payment_ref, amount_paid: p.amount_paid }));
+}
+const paymentDoc = id => db.prepare("SELECT * FROM receipts WHERE id = ? AND doc_kind = 'payment'").get(id);
+
+api.post('/receipts/:id/link', wrap((req, res) => {
+  const p = paymentDoc(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not a proof-of-payment document' });
+  const target = db.prepare("SELECT id FROM receipts WHERE id = ? AND COALESCE(doc_kind, 'itemized') = 'itemized'").get(req.body?.receipt_id);
+  if (!target) return res.status(400).json({ error: 'Choose an itemized receipt to link it to' });
+  if (db.prepare("SELECT 1 FROM expenses WHERE receipt_id = ? AND status != 'rejected'").get(p.id)) {
+    return res.status(400).json({ error: 'This payment has its own expense. Reject that expense first, so the payment isn\'t counted twice.' });
+  }
+  db.prepare('UPDATE receipts SET payment_for = ?, payment_unlinked = 0 WHERE id = ?').run(target.id, p.id);
+  audit('payment_link', { payment: p.id, receipt: target.id });
+  res.json({ ok: true });
+}));
+
+api.post('/receipts/:id/unlink', wrap((req, res) => {
+  const p = paymentDoc(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not a proof-of-payment document' });
+  db.prepare('UPDATE receipts SET payment_for = NULL, payment_unlinked = 1 WHERE id = ?').run(p.id);
+  audit('payment_unlink', { payment: p.id, receipt: p.payment_for });
+  res.json({ ok: true });
+}));
+
+// No itemized receipt will ever come: record the payment itself as one expense.
+api.post('/receipts/:id/record-payment', wrap((req, res) => {
+  const p = paymentDoc(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Not a proof-of-payment document' });
+  if (p.payment_for) return res.status(400).json({ error: 'This payment is linked to a receipt — unlink it first.' });
+  if (!(p.amount_paid > 0)) return res.status(400).json({ error: 'No amount was read from this payment — add the expense by hand instead.' });
+  const r = db.prepare(`
+    INSERT INTO expenses (date, provider, category, description, amount, payment_method, status, confidence, rationale, source_type, receipt_id)
+    VALUES (?, ?, 'Other', 'Payment (no itemized receipt)', ?, ?, 'pending_review', 'Low', ?, 'manual', ?)
+  `).run(p.doc_date || localToday(), p.provider || '', cents(p.amount_paid), p.payment_ref || null,
+    'Recorded from a proof of payment with no itemized receipt. An itemized receipt is stronger evidence — add one if you can.', p.id);
+  db.prepare('UPDATE receipts SET payment_unlinked = 1 WHERE id = ?').run(p.id);
+  audit('payment_recorded_as_expense', { payment: p.id, expense: Number(r.lastInsertRowid) });
+  res.json({ id: Number(r.lastInsertRowid) });
 }));
 
 api.get('/receipts/:id/text', wrap((req, res) => {

@@ -206,6 +206,13 @@ button { font: inherit; cursor: pointer; }
 .pre-hsa-note.dup { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); background: color-mix(in srgb, var(--warning) 7%, transparent); }
 .pre-hsa-note.dup a { color: inherit; }
 .dup-note { font-size: 12.5px; margin-top: 6px; color: color-mix(in srgb, var(--warning) 55%, var(--ink)); }
+.g-fact { font-size: 12.5px; line-height: 1.6; color: var(--ink-2); margin: 0 14px 8px; }
+.g-fact .bicon { vertical-align: -2px; margin-right: 2px; }
+.g-fact .btn, .g-fact select { margin-left: 6px; vertical-align: middle; }
+.g-fact.good { color: var(--good-text); }
+.g-fact.warn { color: color-mix(in srgb, var(--warning) 55%, var(--ink)); font-weight: 550; }
+.drawer-body .g-fact { margin-left: 0; margin-right: 0; }
+.drawer-receipt.short iframe { height: 260px; }
 .dup-list { font-size: 12.5px; line-height: 1.7; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
 .pre-hsa-note { font-size: 12.5px; line-height: 1.5; padding: 9px 11px; margin: 0 0 14px; border-radius: 8px;
   color: var(--ink-2); border: 1px solid color-mix(in srgb, var(--critical) 35%, var(--border));

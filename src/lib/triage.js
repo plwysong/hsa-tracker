@@ -8,13 +8,20 @@ import { getSetting, setSetting, audit } from '../db.js';
 const TRIAGE_PROMPT = `You are an HSA (Health Savings Account) eligibility analyst. You will receive the raw extracted text of a receipt, order confirmation, or medical statement. Your job:
 
 1. Identify the merchant/provider name, purchase or service date, and any order/receipt/invoice ID.
-2. Split the document into individual LINE ITEMS (one per product or service charge). Ignore payments, credits, taxes, shipping, subtotals, and totals — only actual product/service charges.
-3. Judge each line item's HSA eligibility under IRS Publication 502:
+2. Decide what kind of document this is:
+   - "itemized": it lists what was bought or which services were provided (a receipt, invoice, statement, order confirmation).
+   - "payment_only": it only proves a payment and lists nothing that was bought — a card-terminal slip, a payment confirmation, a single bank or card statement line. For these, return an empty items array; the payment is recorded through total_paid instead.
+3. Split an itemized document into individual LINE ITEMS (one per product or service charge) at their listed price. Do not create items for payments, credits, discounts, adjustments, taxes, shipping, subtotals, or totals.
+4. Read what was actually paid, at the document level:
+   - total_paid: the amount actually charged or paid for the items on this document, after any discounts, credits, coupons, adjustments, or insurance payments. For a payment_only document, the amount charged. null if the document doesn't show it.
+   - discounts: the total of discounts, credits, coupons, adjustments, and insurance payments that reduced what was paid (a positive number; 0 if none). Example: lines of $6,450.00 with a 5% prepay credit of $322.50 and a payment of $6,127.50 → total_paid 6127.50, discounts 322.50.
+   - payment_ref: the card brand and last 4 digits and any transaction/reference number shown, e.g. "VISA 1234 · Transaction 5678"; else null.
+5. Judge each line item's HSA eligibility under IRS Publication 502:
    - ELIGIBLE (verdict "eligible"): medical/dental/vision/pharmacy services, prescription and OTC medications, contact lenses & lens solution, prescription eyewear, first-aid supplies, medical devices (thermometers, BP monitors, glucose monitors), feminine hygiene products, sunscreen SPF 15+, and similar clearly-qualified expenses. Confidence High or Medium.
    - NEEDS JUDGMENT (verdict "needs_judgment"): general-wellness vitamins and dietary supplements — these qualify ONLY with a doctor's Letter of Medical Necessity (LMN) for a diagnosed condition. Always queue these with confidence Low and say in the rationale that an LMN is required. Also use this verdict for genuinely ambiguous items.
    - NOT ELIGIBLE (verdict "not_eligible"): groceries, general hygiene items (toothpaste, floss, soap, deodorant), cosmetics, electronics, household goods, clothing, non-prescription sunglasses/goggles, pill organizers, books, and anything clearly non-medical.
-4. Assign each item a category: Dental, Medical, Vision, Pharmacy, or Other.
-5. Write a plain-English rationale (1-2 sentences) for EVERY item explaining the verdict — this becomes a permanent audit record.
+6. Assign each item a category: Dental, Medical, Vision, Pharmacy, or Other.
+7. Write a plain-English rationale (1-2 sentences) for EVERY item explaining the verdict — this becomes a permanent audit record.
 
 Respond with ONLY a JSON object, no markdown fences, no commentary:
 {
@@ -22,6 +29,10 @@ Respond with ONLY a JSON object, no markdown fences, no commentary:
   "purchase_date": "YYYY-MM-DD or null if unknown",
   "order_ref": "order/receipt/invoice id or null",
   "payment_method": "payment method if shown, else null",
+  "document_type": "itemized|payment_only",
+  "total_paid": 123.45,
+  "discounts": 0,
+  "payment_ref": "card brand, last 4 and transaction id, or null",
   "document_summary": "one sentence describing this document",
   "items": [
     {
@@ -36,7 +47,7 @@ Respond with ONLY a JSON object, no markdown fences, no commentary:
   ]
 }
 
-If the document contains no recognizable purchases at all, return {"provider": null, "purchase_date": null, "order_ref": null, "payment_method": null, "document_summary": "...", "items": []}.
+If the document contains no recognizable purchases or payments at all, return {"provider": null, "purchase_date": null, "order_ref": null, "payment_method": null, "document_type": "itemized", "total_paid": null, "discounts": 0, "payment_ref": null, "document_summary": "...", "items": []}.
 
 RECEIPT TEXT:
 `;
@@ -204,7 +215,7 @@ function keywordTriage(text) {
     if (ld) { itemDate = toIsoDate(ld[1], ld[2], ld[3]); desc = desc.slice(ld[0].length); }
     desc = desc.replace(/^[,;\s]+|[,;\s]+$/g, '');
     if (!desc || desc.length < 3 || amount <= 0) continue;
-    if (/total|subtotal|tax|shipping|payment|acct pmt|\bpmt\b|balance|change|tender/i.test(desc)) continue;
+    if (/total|subtotal|tax|shipping|payment|acct pmt|\bpmt\b|balance|change|tender|discount|adjustment|\badj\b|credit|savings/i.test(desc)) continue;
 
     let matched = false;
     for (const [re, category, confidence, rationale] of ELIGIBLE_PATTERNS) {
@@ -224,12 +235,25 @@ function keywordTriage(text) {
       items.push({ description: desc, amount, date: itemDate, category: 'Other', verdict: 'not_eligible', confidence: 'Low', rationale: 'No medical keyword matched (offline mode). If this is actually a medical expense, re-queue it from the Discarded tab or re-triage the receipt with an AI engine.' });
     }
   }
+  // A card-terminal slip lists no purchases, only a charge: record it as proof of
+  // payment (so it can be linked to its itemized receipt) instead of an expense.
+  const charged = text.match(/(?:total|card sale|amount)[^\n$]*\$\s?(\d{1,3}(?:,\d{3})*\.\d{2})/i);
+  if (!items.some(i => i.verdict !== 'not_eligible') && charged && PAYMENT_SLIP.test(text)) {
+    return {
+      provider, purchase_date: docDate, order_ref: null, payment_method: null,
+      document_type: 'payment_only', total_paid: parseFloat(charged[1].replace(/,/g, '')), discounts: 0, payment_ref: null,
+      document_summary: 'Card payment slip (keyword mode) — proof of payment, not an itemized receipt.',
+      items: [],
+    };
+  }
   return {
     provider, purchase_date: docDate, order_ref: null, payment_method: null,
+    document_type: 'itemized', total_paid: null, discounts: 0, payment_ref: null,
     document_summary: 'Keyword-only triage (offline mode) — dates/provider are best-effort guesses; review carefully.',
     items,
   };
 }
+const PAYMENT_SLIP = /card sale|auth(?:orization)?\s*(?:id|code|#)|approval\s*(?:code|#)|contactless|chip read|\bAID:\s*A0/i;
 
 /**
  * Run eligibility triage over raw receipt text.
@@ -249,6 +273,10 @@ export async function triageReceipt(rawText) {
     // Normalize amounts
     parsed.items = parsed.items.filter(i => i && i.description && Number.isFinite(Number(i.amount)) && Number(i.amount) > 0)
       .map(i => ({ ...i, amount: Number(i.amount) }));
+    parsed.document_type = parsed.document_type === 'payment_only' ? 'payment_only' : 'itemized';
+    if (parsed.document_type === 'payment_only') parsed.items = []; // recorded via total_paid, never as an expense
+    parsed.total_paid = Number(parsed.total_paid) > 0 ? Number(parsed.total_paid) : null;
+    parsed.discounts = Number(parsed.discounts) > 0 ? Number(parsed.discounts) : 0;
     return { ...parsed, ai_provider: providerName };
   } catch (err) {
     // AI provider unavailable — degrade to keyword triage rather than losing the receipt.

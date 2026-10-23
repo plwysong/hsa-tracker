@@ -176,6 +176,60 @@ async function approveGuarded(send, { rejectId } = {}) {
 }
 const dupChip = e => e.duplicates?.length
   ? `<span class="chip dup" title="Same date, amount and provider as: ${esc(e.duplicates.map(d => `${d.description} (${d.status.replace('_', ' ')})`).join('; '))}">Possible duplicate</span>` : '';
+// ---------------- Proof of payment ----------------
+// A card slip proves an itemized receipt was paid; linked, the two are kept and
+// counted together (the slip adds no expense of its own).
+const paidBy = p => `${esc(p.payment_ref || 'card payment')}${p.amount_paid ? ` · ${money(p.amount_paid)}` : ''}`;
+const isWaitingPayment = r => r.doc_kind === 'payment' && !r.payment_for && !r.expense_count;
+
+/** Facts about a receipt shown above its lines: linked payment, discount, and whether the lines add up. */
+function receiptFactsHtml(rc) {
+  if (!rc) return '';
+  const out = [];
+  for (const p of rc.payments || []) {
+    out.push(`<div class="g-fact good">${icon('check')} Paid by ${paidBy(p)} — proof of payment linked, counted once.
+      <button class="btn small ghost" data-act="view-receipt" data-rid="${p.id}">View payment</button></div>`);
+  }
+  if (rc.amount_paid && rc.discounts > 0) {
+    out.push(`<div class="g-fact">Paid ${money(rc.amount_paid)} after ${money(rc.discounts)} in discounts — spread across the lines, so each shows what was actually paid.</div>`);
+  }
+  if (rc.amount_paid && rc.lines_total > rc.amount_paid + 0.01) {
+    out.push(`<div class="g-fact warn">Lines total ${money(rc.lines_total)}, but ${money(rc.amount_paid)} was paid. Check the amounts before approving — only what was paid can be reimbursed.</div>`);
+  }
+  return out.join('');
+}
+
+/** Itemized receipts a waiting payment could belong to, nearest date first. */
+function linkOptions(p, receipts) {
+  const when = p.doc_date || p.received_at;
+  const dist = r => Math.abs(new Date(r.doc_date || r.received_at) - new Date(when)) || 0;
+  return receipts.filter(r => r.doc_kind !== 'payment' && r.expense_count)
+    .sort((a, b) => dist(a) - dist(b)).slice(0, 12)
+    .map(r => `<option value="${r.id}">${fmtDate(r.doc_date || r.received_at)} · ${esc(r.provider || r.original_name || r.filename)} · ${money(r.amount_paid ?? r.lines_total)}</option>`).join('');
+}
+
+function waitingPaymentsHtml(waiting, receipts) {
+  if (!waiting.length) return '';
+  return `<div class="card group">
+    <div class="group-head"><span class="g-title">Proof of payment — waiting for its itemized receipt</span>
+      <span class="g-meta">${waiting.length} document${waiting.length === 1 ? '' : 's'}</span></div>
+    <div class="g-fact" style="margin:0 14px 6px">A card slip proves something was paid but not what was bought, so it adds nothing on its own. It links itself automatically when its itemized receipt arrives — or link it yourself.</div>
+    ${waiting.map(p => `
+      <div class="item">
+        <div class="body">
+          <div class="desc">${esc(p.provider || p.original_name || p.filename)}</div>
+          <div class="meta"><span>${fmtDate(p.doc_date || p.received_at)}</span>·<span>${paidBy(p)}</span><span class="muted">${esc(p.original_name || p.filename)}</span></div>
+          <div class="i-actions" style="margin-top:8px;flex-wrap:wrap">
+            <button class="btn small ghost" data-act="view-receipt" data-rid="${p.id}">View</button>
+            <select class="pay-link" data-pid="${p.id}"><option value="">Link to a receipt…</option>${linkOptions(p, receipts)}</select>
+            <button class="btn small" data-act="record-payment" data-rid="${p.id}" title="Only if no itemized receipt will ever come">Record as expense</button>
+          </div>
+        </div>
+        <div class="amount">${money(p.amount_paid)}</div>
+      </div>`).join('')}
+  </div>`;
+}
+
 const approvedToast = (choice, base = 'Approved') => choice === 'record' ? `${base} — kept as a record, not counted` : base;
 
 let toastTimer;
@@ -419,6 +473,9 @@ views.review = async function () {
   const items = await api('/expenses?' + params);
   const settings = await api('/settings');
   const discardedCount = (await api('/discarded')).length;
+  const receipts = await api('/receipts');
+  const receiptById = new Map(receipts.map(r => [r.id, r]));
+  const waiting = receipts.filter(isWaitingPayment);
   selected.clear();
 
   // Group by receipt (or order ref, or standalone)
@@ -461,8 +518,9 @@ views.review = async function () {
       <span class="count">${items.length} shown</span>
     </div>` : ''}
 
-    ${items.length === 0 ? `<div class="card"><div class="empty"><div class="big">${icon('check', 34)}</div>Queue is clear.<br>${settings.email_enabled ? 'Upload a receipt or wait for the next email check.' : 'Upload a receipt to get started.'}</div></div>` : ''}
-    ${[...groups.entries()].map(([key, list]) => renderGroup(key, list, settings)).join('')}
+    ${waitingPaymentsHtml(waiting, receipts)}
+    ${items.length === 0 && !waiting.length ? `<div class="card"><div class="empty"><div class="big">${icon('check', 34)}</div>Queue is clear.<br>${settings.email_enabled ? 'Upload a receipt or wait for the next email check.' : 'Upload a receipt to get started.'}</div></div>` : ''}
+    ${[...groups.entries()].map(([key, list]) => renderGroup(key, list, settings, receiptById.get(list[0].receipt_id))).join('')}
 
     ${discardedCount ? `<p class="inline-note section-gap">${discardedCount} item${discardedCount === 1 ? ' was' : 's were'} auto-discarded as clearly not eligible — <a href="#/discarded">view them</a>. Nothing is ever deleted.</p>` : ''}
 
@@ -491,6 +549,12 @@ views.review = async function () {
   });
 
   main.onchange = e => {
+    if (e.target.matches('select.pay-link') && e.target.value) {
+      api(`/receipts/${e.target.dataset.pid}/link`, { method: 'POST', body: { receipt_id: Number(e.target.value) } })
+        .then(() => { toast('Linked — the payment and its receipt are now kept and counted together'); views.review(); })
+        .catch(err => { toastError(err); e.target.value = ''; });
+      return;
+    }
     if (e.target.matches('.item input[type="checkbox"]')) {
       const id = Number(e.target.dataset.id);
       e.target.checked ? selected.add(id) : selected.delete(id);
@@ -522,6 +586,11 @@ views.review = async function () {
       } });
     }
     if (btn.dataset.act === 'view-receipt') window.open(`/api/receipts/${btn.dataset.rid}/file`, '_blank');
+    if (btn.dataset.act === 'record-payment') {
+      await api(`/receipts/${btn.dataset.rid}/record-payment`, { method: 'POST' });
+      toast('Recorded as an expense — review it below');
+      views.review();
+    }
     if (btn.dataset.groupAct) {
       const ids = JSON.parse(btn.dataset.ids);
       const c = await approveGuarded(o => api('/expenses/bulk', { method: 'POST', body: { ids, action: btn.dataset.groupAct, ...o } }));
@@ -554,7 +623,7 @@ views.review = async function () {
   }
 };
 
-function renderGroup(key, list, settings) {
+function renderGroup(key, list, settings, rc) {
   const first = list[0];
   const sum = list.reduce((s, e) => s + e.amount, 0);
   const ids = JSON.stringify(list.map(e => e.id));
@@ -572,6 +641,7 @@ function renderGroup(key, list, settings) {
         <button class="btn small" data-group-act="reject" data-ids='${ids}'>${icon('x')} Reject all</button>
       </span>
     </div>
+    ${receiptFactsHtml(rc)}
     ${list.map(e => `
       <div class="item">
         <input type="checkbox" data-id="${e.id}">
@@ -631,6 +701,7 @@ function expensePaneHtml(e, settings) {
     <div>
       <h2>${esc(e.description)}</h2>
       <div class="drawer-amount">${money(e.amount)} <span class="chip status-${e.status}" style="vertical-align:3px">${e.status.replace('_', ' ')}</span></div>
+      ${e.list_amount != null ? `<div class="drawer-sub">What was actually paid — listed at ${money(e.list_amount)} before the receipt's discount.</div>` : ''}
     </div>
     <button class="btn small ghost drawer-close" title="Close" aria-label="Close">${icon('x')}</button>
   </div>
@@ -661,6 +732,10 @@ function expensePaneHtml(e, settings) {
     ${e.receipt_id
       ? `<div class="drawer-receipt"><iframe src="/api/receipts/${e.receipt_id}/file#toolbar=0" title="Receipt"></iframe></div>`
       : `<p class="inline-note" style="margin:0">No receipt file attached to this entry.</p>`}
+    ${(e.payment_proofs || []).map(p => `
+      <div class="drawer-section-title">Proof of payment — ${esc(p.name)}</div>
+      <div class="g-fact good" style="margin:0 0 8px">${icon('check')} Paid by ${paidBy(p)}. Linked to this receipt and counted once.</div>
+      <div class="drawer-receipt short"><iframe src="/api/receipts/${p.id}/file#toolbar=0" title="Proof of payment"></iframe></div>`).join('')}
     <div class="drawer-confirm" id="pane-confirm" hidden>
       <div style="font-weight:650;font-size:13px;margin-bottom:3px">Delete this expense forever?</div>
       <div style="font-size:12.5px;color:var(--ink-2);margin-bottom:10px">It disappears from your records and totals permanently. If you're declining it as not eligible, use <strong>Reject</strong> instead — that keeps it for your audit trail.</div>
@@ -983,12 +1058,18 @@ const wireLedgerSwitch = () => $$('.seg button').forEach(b => b.addEventListener
 
 // One plain-words status per receipt, in place of a row of counters.
 function receiptSummary(r) {
+  if (r.doc_kind === 'payment' && !r.expense_count) {
+    return r.payment_for
+      ? { text: `Proof of payment for ${r.payment_for_name || 'a receipt'}`, cls: 'good-text', order: 5 }
+      : { text: 'Proof of payment — not linked', cls: 'warn-text', order: 4 };
+  }
   const parts = [];
   if (r.approved_count) parts.push(`${r.approved_count} approved`);
   if (r.pending_count) parts.push(`${r.pending_count} to review`);
   if (r.rejected_count) parts.push(`${r.rejected_count} rejected`);
   if (parts.length) {
     const cls = r.pending_count ? 'warn-text' : r.approved_count ? 'good-text' : 'muted';
+    if (r.payments?.length) parts.push('payment linked');
     return { text: parts.join(' · '), cls, order: 10 + r.approved_count + r.pending_count + r.rejected_count };
   }
   if (r.discarded_count) return { text: 'Nothing eligible', cls: 'muted', order: 2 };
@@ -1069,8 +1150,10 @@ function receiptPaneHtml(r, items) {
   </div>
   <div class="drawer-body">
     <div class="drawer-receipt"><iframe src="/api/receipts/${r.id}/file#toolbar=0" title="Receipt"></iframe></div>
+    ${paymentSectionHtml(r)}
+    ${receiptFactsHtml(r)}
     <div class="drawer-section-title">Line items</div>
-    ${items.length ? items.map(e => `
+    ${r.doc_kind === 'payment' && !items.length ? `<p class="inline-note" style="margin:0">This is proof of payment — it adds no expenses of its own.</p>` : items.length ? items.map(e => `
       <div class="rc-item">
         <span>${esc(e.description)}<span class="muted"> · ${fmtDate(e.date)}</span></span>
         <span class="num">${money(e.amount)} <span class="chip status-${e.status}">${e.status.replace('_', ' ')}</span></span>
@@ -1109,6 +1192,19 @@ function receiptPaneHtml(r, items) {
   </div>`;
 }
 
+function paymentSectionHtml(r) {
+  if (r.doc_kind !== 'payment') return '';
+  const head = `<div class="drawer-section-title">Proof of payment · ${paidBy(r)}</div>`;
+  if (r.payment_for) {
+    return head + `<div class="g-fact good" style="margin:0 0 6px">${icon('check')} Linked to <a href="#" data-open-receipt="${r.payment_for}">${esc(r.payment_for_name || 'its receipt')}</a> — kept and counted together.
+      <button class="btn small ghost" data-pane-act="unlink">Unlink</button></div>`;
+  }
+  if (r.expense_count) return head + `<div class="g-fact" style="margin:0 0 6px">Recorded as its own expense (no itemized receipt).</div>`;
+  return head + `<div class="g-fact warn" style="margin:0 0 6px">Not linked to an itemized receipt yet.
+    <select class="pay-link" data-pid="${r.id}" style="margin-top:6px"><option value="">Link to a receipt…</option>${linkOptions(r, receiptRows)}</select>
+    <button class="btn small" data-pane-act="record-payment" style="margin-top:6px">Record as expense</button></div>`;
+}
+
 /** Opens the inspector for a receipt. `refresh(idToKeepOpen)` re-renders the host view. */
 async function openReceiptPane(id, settings, refresh) {
   const r = receiptRows.find(x => x.id === id);
@@ -1118,7 +1214,15 @@ async function openReceiptPane(id, settings, refresh) {
     const menu = pane.querySelector('#rc-menu');
     const closeMenu = () => { menu.hidden = true; document.removeEventListener('click', onDoc, true); };
     const onDoc = ev => { if (!ev.target.closest('.menu-wrap')) closeMenu(); };
+    pane.onchange = ev => {
+      if (!ev.target.matches('select.pay-link') || !ev.target.value) return;
+      api(`/receipts/${id}/link`, { method: 'POST', body: { receipt_id: Number(ev.target.value) } })
+        .then(() => { toast('Linked — kept and counted together'); refresh(id); })
+        .catch(err => { toastError(err); ev.target.value = ''; });
+    };
     pane.onclick = actionHandler(async ev => {
+      const go = ev.target.closest('[data-open-receipt]');
+      if (go) { ev.preventDefault(); refresh(Number(go.dataset.openReceipt)); return; }
       const btn = ev.target.closest('button');
       if (!btn) return;
       if (btn.id === 'pane-delete-cancel') { pane.querySelector('#pane-confirm').hidden = true; return; }
@@ -1142,6 +1246,17 @@ async function openReceiptPane(id, settings, refresh) {
       closeMenu();
       if (act === 'open') window.open(`/api/receipts/${id}/file`, '_blank');
       if (act === 'download') location.href = `/api/receipts/${id}/file?download=1`;
+      if (act === 'unlink') {
+        await api(`/receipts/${id}/unlink`, { method: 'POST' });
+        toast("Unlinked — it won't be linked automatically again");
+        refresh(id);
+      }
+      if (act === 'record-payment') {
+        await api(`/receipts/${id}/record-payment`, { method: 'POST' });
+        toast('Recorded as an expense — approve it in Review');
+        refreshBadge();
+        refresh(id);
+      }
       if (act === 'add-expense') {
         editExpenseModal(null, settings, async body => {
           const c = await approveGuarded(o => api('/expenses', { method: 'POST', body: { ...body, receipt_id: id, ...o } }));

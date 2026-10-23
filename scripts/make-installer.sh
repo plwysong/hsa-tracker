@@ -11,7 +11,7 @@ npx electron-builder --mac dir
 # along. (CLAUDE.local.md once did — see the build "files" exclusions in package.json.)
 APP_DIR="dist/mac-arm64/HSA Tracker.app/Contents/Resources/app"
 LEAKS=$(find "$APP_DIR" -maxdepth 2 \( -name 'CLAUDE*.md' -o -name 'ROADMAP.md' -o -name '.claude' \
-  -o -name 'data' -o -name '*.db' -o -name '*.db-wal' -o -name 'seed-data.json' \) -not -path '*/node_modules/*')
+  -o -name 'data' -o -name 'test' -o -name '*.db' -o -name '*.db-wal' -o -name 'seed-data.json' \) -not -path '*/node_modules/*')
 if [ -n "$LEAKS" ]; then
   echo "✗ Refusing to build: private or dev-only files are inside the app:" >&2
   echo "$LEAKS" >&2

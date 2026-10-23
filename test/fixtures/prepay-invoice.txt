@@ -1,0 +1,28 @@
+Harbor View Dentistry
+100 Example Road Ste 1
+Sampletown , CA 90000
+(555)555-0100
+October 08, 2026
+Account Aging
+Pat Sample 30 Days: $0.00
+1 Sample St 60 Days: $0.00
+Contract: $0.00
+Balance Due: $0.00
+ID: 10001 Estimated Insurance: $0.00
+Balance Due Now: $0.00
+Date Patient Provider Description Tth Surface Fee
+10/8/2026 Pat Credit Adj - Miscellaneous Adjustment INV. Paid in full
+for 5% for ($322.50)
+Pat Acct Pmt - MC/Visa for ($6,127.50)
+Pat Alex Smith 08681 - Ortho Retentive Appliance- VIVERA $275.00
+DDS.
+Pat Alex Smith 08681 - Ortho Retentive Appliance- VIVERA $275.00
+DDS.
+Pat Alex Smith 08090 - Invisalign $5,900.00
+SubTotal: $6,450.00
+Tax:
+Charge(s): $6,450.00
+Payment(s): $6,127.50
+Adjustment(s): $322.50
+Balance Due: $0.00
+Page 1 of 1
