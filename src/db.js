@@ -105,6 +105,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
 `);
 
+/** Settings that are secrets: never sent to the UI and never written to a backup. */
+export const SECRET_KEYS = ['anthropic_api_key', 'openai_api_key', 'email_password'];
+
 export function audit(event, detail) {
   db.prepare('INSERT INTO audit_log (event, detail) VALUES (?, ?)').run(event, typeof detail === 'string' ? detail : JSON.stringify(detail));
 }
@@ -167,6 +170,9 @@ const DEFAULT_SETTINGS = {
   email_poll_minutes: 15,
   categories: ['Dental', 'Medical', 'Vision', 'Pharmacy', 'Other'],
   hsa_established: '',            // YYYY-MM-DD; expenses before it don't qualify
+  backup_auto: true,              // back up to backup_dir (or iCloud Drive) after changes
+  backup_plain: true,             // also keep readable copies alongside each backup
+  backup_dir: '',                 // '' = iCloud Drive, when it's turned on
 };
 
 for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {

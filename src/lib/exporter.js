@@ -23,7 +23,7 @@ function allExpenses(status = null, ids = null) {
 // A receipt and its linked proof of payment travel together: in every zip they
 // share one folder named for the purchase, e.g. "2026-10-08 Harbor View Dentistry (#12)".
 // Receipts without a linked payment stay loose, as before.
-function receiptZipPaths(receiptIds = null) {
+export function receiptZipPaths(receiptIds = null) {
   const all = db.prepare(`SELECT r.id, r.filename, r.payment_for, r.doc_date, r.provider, r.received_at,
     (SELECT MIN(date) FROM expenses e WHERE e.receipt_id = r.id) AS line_date,
     (SELECT provider FROM expenses e WHERE e.receipt_id = r.id LIMIT 1) AS line_provider FROM receipts r`).all();

@@ -317,6 +317,105 @@ const actionHandler = fn => async ev => {
 // Safety net for any other async action that fails.
 window.addEventListener('unhandledrejection', e => toastError(e.reason));
 
+// ---------------- Backups ----------------
+// Backups go to the user's own iCloud Drive (or a folder they choose); the sidebar
+// shows at a glance whether the last one worked, and Settings has the details.
+const ago = iso => {
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  if (s < 60) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`;
+  const d = Math.round(h / 24);
+  return `${d} day${d === 1 ? '' : 's'} ago`;
+};
+const whereName = st => st.isICloud ? 'iCloud Drive' : String(st.folder || '').replace(/^\/Users\/[^/]+/, '~');
+const backupWhen = b => new Date(b.at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+const backupWhat = b => b.expenses == null ? 'still downloading from the cloud' : `${b.expenses} approved expense${b.expenses === 1 ? '' : 's'} · ${b.receipts} receipt${b.receipts === 1 ? '' : 's'}`;
+
+function backupLine(st) {
+  if (!st.folder) return { warn: true, text: 'Not backed up — set it up in Settings' };
+  if (st.lastError) return { warn: true, text: 'Last backup failed — see Settings' };
+  if (!st.lastAt && !st.hasRecords) return { warn: false, text: 'Backups start with your first receipt' };
+  if (!st.lastAt) return { warn: true, text: st.auto ? 'Not backed up yet — starting shortly' : 'Not backed up yet' };
+  return { warn: false, text: `Backed up to ${st.isICloud ? 'iCloud' : 'your folder'} · ${ago(st.lastAt)}` };
+}
+
+async function refreshBackupStatus() {
+  const el = $('#side-backup');
+  try {
+    const st = await api('/backup/status');
+    const line = backupLine(st);
+    el.className = 'side-backup' + (line.warn ? ' warn' : '');
+    el.innerHTML = `<span class="mark">${line.warn ? '!' : '✓'}</span><span>${esc(line.text)}</span>`;
+    el.hidden = false;
+    return st;
+  } catch { return null; }
+}
+$('#side-backup')?.addEventListener('click', () => navigate('settings'));
+setInterval(refreshBackupStatus, 60 * 1000);
+
+/** Lets the user pick a backup to restore, then confirms. `pre` = list already fetched (from another folder). */
+async function openRestorePicker(pre = null) {
+  const folder = pre?.folder || '';
+  const list = pre?.backups || await api('/backup/list');
+  if (!list.length) {
+    openModal(`<h3>No backups yet</h3>
+      <p style="font-size:13px;color:var(--ink-2);line-height:1.5">There are no HSA Tracker backups in ${folder ? 'that folder' : 'your backup folder'}. If they're in another folder — say, from an older Mac — choose it.</p>
+      <div class="m-actions"><button class="btn" data-close>Close</button><button class="btn primary" id="m-bk-other">Choose another folder…</button></div>`);
+  } else {
+    openModal(`<h3>Restore from a backup</h3>
+      <p style="font-size:13px;color:var(--ink-2);line-height:1.5;margin:0 0 8px">Pick the backup to bring back. The newest is first.</p>
+      <div class="bk-list">${list.map((b, i) => `
+        <label><input type="radio" name="bk" value="${esc(b.file)}" ${i === 0 ? 'checked' : ''}>
+          <span>${esc(backupWhen(b))}${b.beforeRestore ? ' <span class="chip">saved before a restore</span>' : ''}<span class="muted">${esc(backupWhat(b))}</span></span></label>`).join('')}
+      </div>
+      <div class="m-actions">
+        <button class="btn ghost" id="m-bk-other" style="margin-right:auto">Choose another folder…</button>
+        <button class="btn" data-close>Cancel</button>
+        <button class="btn primary" id="m-bk-next">Restore…</button>
+      </div>`);
+    $('#m-bk-next').addEventListener('click', () => {
+      const b = list.find(x => x.file === $('input[name="bk"]:checked')?.value);
+      if (b) confirmRestore(b, folder);
+    });
+  }
+  $('#m-bk-other').addEventListener('click', async () => {
+    try {
+      const r = await api('/backup/choose-restore-folder', { method: 'POST' });
+      if (!r.cancelled) openRestorePicker(r);
+    } catch (err) { toastError(err); }
+  });
+}
+
+function confirmRestore(b, folder = '') {
+  openModal(`
+    <h3>Restore your backup from ${esc(backupWhen(b))}?</h3>
+    <p style="font-size:13.5px;line-height:1.5;margin:0 0 10px">This brings back <strong>${esc(backupWhat(b))}</strong> and your settings, exactly as they were when the backup was made.</p>
+    <ul style="font-size:13px;color:var(--ink-2);line-height:1.6;margin:0 0 4px;padding-left:18px">
+      <li>Anything already on this Mac is saved as a backup first — nothing is lost.</li>
+      <li>Your AI key and email password are never in backups. If this Mac has them, they're kept; otherwise enter them in Settings afterwards.</li>
+    </ul>
+    <div class="m-actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="m-bk-restore">Restore</button></div>`);
+  $('#m-bk-restore').addEventListener('click', async ev => {
+    ev.target.disabled = true;
+    ev.target.textContent = 'Restoring…';
+    try {
+      const r = await api('/backup/restore', { method: 'POST', body: { folder, file: b.file } });
+      closeModal();
+      toast(`Restored — ${r.expenses} approved expense${r.expenses === 1 ? '' : 's'} and ${r.receipts} receipt${r.receipts === 1 ? '' : 's'} are back${r.missingFiles ? ` (${r.missingFiles} receipt file${r.missingFiles === 1 ? " wasn't" : "s weren't"} in the backup)` : ''}`, 7000);
+      refreshBackupStatus();
+      refreshEmailHint();
+      navigate('dashboard');
+    } catch (err) {
+      ev.target.disabled = false;
+      ev.target.textContent = 'Restore';
+      toastError(err);
+    }
+  });
+}
+
 // ---------------- Router ----------------
 const views = {};
 let currentView = 'dashboard';
@@ -435,6 +534,8 @@ views.dashboard = async function () {
   // First run: skip the wall of zeros and point at the one action that matters.
   // Only when the tracker is truly empty — no receipts stored or discarded either.
   if (!s.approved_count && !s.pending_count && !s.rejected_count && !s.receipts_count && !s.discarded_count) {
+    // A new Mac: if a backup is waiting in iCloud Drive, offer it right here.
+    const found = (await api('/backup/found').catch(() => ({}))).backup;
     main.innerHTML = `
       <div class="page-head">
         <div>
@@ -442,13 +543,23 @@ views.dashboard = async function () {
           <div class="sub">Your future tax-free withdrawal balance, documented and audit-ready.</div>
         </div>
       </div>
-      <div class="card welcome">
-        <h2>Start with your first receipt</h2>
-        <p>Drop a PDF or photo anywhere in this window, or click below. It gets split into line
-        items and checked for HSA eligibility — nothing is recorded without your approval.</p>
-        <button class="btn primary" id="dash-upload">${icon('upload')} Upload your first receipt</button>
+      <div class="${found ? 'welcome2' : ''}">
+        <div class="card welcome">
+          <h2>Start with your first receipt</h2>
+          <p>Drop a PDF or photo anywhere in this window, or click below. It gets split into line
+          items and checked for HSA eligibility — nothing is recorded without your approval.</p>
+          <button class="btn primary" id="dash-upload">${icon('upload')} Upload your first receipt</button>
+        </div>
+        ${found ? `<div class="card welcome">
+          <h2>Used HSA Tracker before?</h2>
+          <div class="found"><strong>Found a backup in your ${found.inICloud ? 'iCloud Drive' : 'backup folder'}</strong>From ${esc(backupWhen(found))} · ${esc(backupWhat(found))}</div>
+          <button class="btn primary" id="dash-restore">Restore it</button>
+          <button class="btn ghost" id="dash-restore-other">Choose another…</button>
+        </div>` : ''}
       </div>`;
     $('#dash-upload').addEventListener('click', () => $('#file-input').click());
+    $('#dash-restore')?.addEventListener('click', () => confirmRestore(found, found.folder));
+    $('#dash-restore-other')?.addEventListener('click', () => openRestorePicker());
     return;
   }
 
@@ -1555,12 +1666,7 @@ views.settings = async function () {
     </div>
 
     <div class="settings-form">
-      <div class="card settings-section" style="margin-top:16px">
-        <h3>Backup</h3>
-        <div class="s-sub">One zip with everything: your expenses, a PDF summary, the full history, and every receipt file. Keep a copy somewhere safe. The tax summary and spreadsheets are under <strong>Export</strong> in Expenses.</div>
-        <a class="btn primary" href="/api/export/zip">${icon('zip')} Download full backup</a>
-        <button class="btn ghost" id="go-export">Go to Expenses ${icon('arrowRight')}</button>
-      </div>
+      <div class="card settings-section" style="margin-top:16px" id="backup-section"></div>
     </div>
 
     ${navigator.userAgent.includes('Electron') ? '' : `
@@ -1659,7 +1765,7 @@ views.settings = async function () {
     e.target.disabled = false;
   }));
 
-  $('#go-export').addEventListener('click', () => navigate('ledger'));
+  renderBackupSection();
 
   $('#app-quit')?.addEventListener('click', async () => {
     try { await api('/quit', { method: 'POST' }); } catch { }
@@ -1684,6 +1790,73 @@ views.settings = async function () {
     e.target.disabled = false;
   });
 };
+
+function backupSectionHtml(st) {
+  const line = backupLine(st);
+  const sw = (key, on, label) => `<button class="switch" role="switch" aria-checked="${on}" aria-label="${label}" data-bk-toggle="${key}"></button>`;
+  const status = !st.folder
+    ? `<div class="bk-status warn"><div class="dot">!</div><div><div class="t1">${st.icloudAvailable ? 'Choose where to keep backups' : "iCloud Drive isn't turned on on this Mac"}</div>
+        <div class="t2">Turn it on in System Settings → Apple Account → iCloud → iCloud Drive, or choose another folder below — Dropbox and Google Drive work too.</div></div></div>`
+    : st.lastError
+      ? `<div class="bk-status warn"><div class="dot">!</div><div><div class="t1">The last backup didn't work</div><div class="t2">${esc(st.lastError)}</div></div>
+          <button class="btn small" data-bk-act="now">Try again</button></div>`
+      : !st.lastAt
+        ? `<div class="bk-status none"><div class="dot">…</div><div><div class="t1">Not backed up yet</div><div class="t2">${esc(whereName(st))} › Backups</div></div>
+            <button class="btn small" data-bk-act="now">Back up now</button></div>`
+        : `<div class="bk-status"><div class="dot">✓</div><div><div class="t1">${esc(line.text.replace('iCloud', 'iCloud Drive'))}</div>
+            <div class="t2">${st.lastCounts ? `${st.lastCounts.expenses} approved expense${st.lastCounts.expenses === 1 ? '' : 's'} · ${st.lastCounts.receipts} receipt${st.lastCounts.receipts === 1 ? '' : 's'} · ` : ''}${esc(whereName(st))} › HSA Tracker${st.changesSince && st.auto ? ' · newer changes are backed up in a few minutes' : ''}</div></div>
+            <button class="btn small" data-bk-act="reveal">Show in Finder</button></div>`;
+  return `
+    <h3>Backup</h3>
+    <div class="s-sub">Keeps a complete copy of your records somewhere safer than this Mac, so a lost or replaced computer never means lost records.</div>
+    ${status}
+    <div class="bk-row">
+      <div><div class="lbl">Back up automatically</div><div class="sub">A few minutes after you approve, edit or add anything. Keeps the last 30 backups.</div></div>
+      <div class="ctl">${sw('auto', st.auto, 'Back up automatically')}</div>
+    </div>
+    <div class="bk-row">
+      <div><div class="lbl">Where</div><div class="sub">iCloud Drive syncs to your other Apple devices and survives a new Mac. A Dropbox or Google Drive folder works too.</div></div>
+      <div class="ctl">${st.folder ? `<span class="where" title="${esc(st.folder)}">${st.isICloud ? '☁ iCloud Drive (recommended)' : esc(whereName(st))}</span>` : ''}
+        ${!st.isICloud && st.icloudAvailable ? '<button class="btn small ghost" data-bk-act="use-icloud">Use iCloud Drive</button>' : ''}
+        <button class="btn small ghost" data-bk-act="folder">${st.folder ? 'Change…' : 'Choose a folder…'}</button></div>
+    </div>
+    <div class="bk-row">
+      <div><div class="lbl">Also keep readable copies</div><div class="sub">Every receipt as an ordinary file named by date and provider, plus the tax summary PDF and a spreadsheet — readable in Finder for decades, even without this app.</div></div>
+      <div class="ctl">${sw('plain', st.plain, 'Also keep readable copies')}</div>
+    </div>
+    <div class="inline-note" style="margin:12px 0 0">Your API key and email app password are <strong>not</strong> included in backups — you'd re-enter them after restoring on a new Mac.</div>
+    <div class="bk-foot">
+      <button class="btn primary" data-bk-act="now" ${st.folder ? '' : 'disabled'}>Back up now</button>
+      <button class="btn" data-bk-act="restore">Restore from a backup…</button>
+    </div>`;
+}
+
+async function renderBackupSection() {
+  const el = $('#backup-section');
+  if (!el) return;
+  const st = await api('/backup/status');
+  el.innerHTML = backupSectionHtml(st);
+  el.onclick = actionHandler(async ev => {
+    const t = ev.target.closest('[data-bk-toggle]');
+    if (t) {
+      const on = t.getAttribute('aria-checked') !== 'true';
+      await api('/backup/settings', { method: 'PUT', body: { [t.dataset.bkToggle]: on } });
+      toast(t.dataset.bkToggle === 'auto' ? (on ? 'Automatic backups on' : 'Automatic backups off') : (on ? 'Readable copies on' : 'Readable copies off'));
+    }
+    const act = ev.target.closest('[data-bk-act]')?.dataset.bkAct;
+    if (act === 'now') {
+      const btn = ev.target.closest('button');
+      btn.textContent = 'Backing up…';
+      await api('/backup/now', { method: 'POST' });
+      toast('Backed up');
+    }
+    if (act === 'reveal') await api('/backup/reveal', { method: 'POST' });
+    if (act === 'folder') await api('/backup/folder', { method: 'POST' });
+    if (act === 'use-icloud') await api('/backup/folder', { method: 'POST', body: { use: 'icloud' } });
+    if (act === 'restore') { openRestorePicker(); return; }
+    if (t || act) { await renderBackupSection(); refreshBackupStatus(); }
+  });
+}
 
 // ---------------- Modals ----------------
 let onModalClose = null; // set by dialogs that await an answer, so dismissing still settles them
@@ -1888,3 +2061,4 @@ const initial = location.hash.replace('#/', '') || 'dashboard';
 navigate(views[initial] ? initial : 'dashboard');
 pollJobs();
 refreshEmailHint();
+refreshBackupStatus();

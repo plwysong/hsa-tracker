@@ -4,7 +4,7 @@ A **local-first HSA eligible expense tracker** with AI receipt triage. Drop in r
 
 **Why:** IRS rules let you reimburse yourself from an HSA *tax-free at any time in the future* for qualified medical expenses — as long as the expense was incurred after the HSA existed, hasn't already been reimbursed or deducted, and is documented. This app is that documentation. The dashboard's headline number is your accumulated tax-free withdrawal balance.
 
-Everything runs on your own machine: a Node.js server, a SQLite database, and a folder of receipt files. **No hosting, no subscriptions, no cloud storage.** The only network calls are the AI triage (your own Claude or OpenAI API key), optional IMAP email polling, and a version check against the GitHub releases page at launch. Everything else — including the OCR model for reading photo receipts — is bundled and works offline.
+Everything runs on your own machine: a Node.js server, a SQLite database, and a folder of receipt files — backed up automatically to **your own iCloud Drive** (or a folder you choose). **No hosting, no subscriptions, no servers of ours: we never see your records.** The only network calls are the AI triage (your own Claude or OpenAI API key), optional IMAP email polling, and a version check against the GitHub releases page at launch. Everything else — including the OCR model for reading photo receipts — is bundled and works offline.
 
 ## Install (macOS)
 
@@ -34,6 +34,7 @@ The app checks the releases page each time it opens and shows an **Update availa
 - **What was actually paid, with proof** — discounts and credits are spread across a receipt's lines so each shows what was really paid, and a warning appears if the lines add up to more than was paid. A card slip uploaded alongside an invoice is recognized as proof of payment: it's linked to the invoice, kept with it (including in backups), and never counted as a second expense.
 - **Possible-duplicate warning** — the same purchase arriving twice (say, an emailed receipt and a photo of the paper one) is flagged before approval; "Not a duplicate" is remembered for that pair.
 - **Email ingestion (optional)** — point Settings at a dedicated free email account (e.g. a fresh Gmail with an [app password](https://myaccount.google.com/apppasswords)) and forward receipts to it; the app polls it over IMAP while running.
+- **Automatic iCloud backups & restore** — a complete backup lands in your iCloud Drive a few minutes after any change, with readable copies of every receipt; a new Mac offers to restore it on first launch.
 - **Backup & export** — the **Export** menu in Expenses has the tax summary PDF (designed to hand to a tax preparer), spreadsheet CSVs, all receipt files, and a one-click zip of everything (CSV + JSON + PDF summary + all receipt files). The backup zip is also in Settings.
 - **Audit trail** — every decision, edit, and processing event is logged. Rejected items are kept, not deleted.
 - **Idempotent** — re-uploading the same file or re-processing the same email/order never creates duplicates.
@@ -78,7 +79,9 @@ To publish a new version: bump `version` in package.json, `npm run installer`, t
 - **Installed app:** `~/Library/Application Support/HSA Tracker/data/` — `hsa.db` (ledger, rationale, audit log, settings) plus `receipts/` (every original file).
 - **Running from source** (`npm start` / `npm run app`): `hsa-tracker/data/` instead.
 
-**Backing up that one `data/` folder backs up everything** (or just use Settings → Download full backup inside the app). `data/` is `.gitignore`d, so sharing this repo never shares your records.
+- **Backups:** `iCloud Drive/HSA Tracker/` by default (Settings → Backup can point it at Dropbox, Google Drive or any folder). `Backups/` holds the last 30 complete snapshots plus every receipt file (stored once each); `Readable copies/` holds receipts named by date and provider, the tax summary PDF and a spreadsheet — usable without the app. API keys and email passwords are never written to a backup. Restore from Settings → Backup, or from the welcome screen on a new Mac.
+
+`data/` is `.gitignore`d, so sharing this repo never shares your records.
 
 ## Architecture (for tinkerers)
 

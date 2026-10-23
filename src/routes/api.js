@@ -2,7 +2,8 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import { existsSync, unlinkSync } from 'node:fs';
-import { db, RECEIPTS_DIR, getSetting, setSetting, audit, establishedDate, countsSql, recordOnlySql, localToday, cents } from '../db.js';
+import { db, RECEIPTS_DIR, getSetting, setSetting, audit, establishedDate, countsSql, recordOnlySql, localToday, cents, SECRET_KEYS } from '../db.js';
+import { runBackup, listBackups, restoreBackup, backupStatus, backupFolder, icloudFolder } from '../lib/backup.js';
 import { ingestDocument, retriageReceipt, listJobs, clearFinishedJobs } from '../lib/ingest.js';
 import { linkPayments } from '../lib/payments.js';
 import { isSupported } from '../lib/extract.js';
@@ -579,7 +580,6 @@ api.get('/audit', wrap((req, res) => {
 
 // ---------- Settings ----------
 const SETTING_KEYS = ['ai_provider', 'anthropic_api_key', 'openai_api_key', 'email_enabled', 'email_host', 'email_port', 'email_user', 'email_password', 'email_poll_minutes', 'categories', 'hsa_established'];
-const SECRET_KEYS = ['anthropic_api_key', 'openai_api_key', 'email_password'];
 
 api.get('/settings', wrap((req, res) => {
   const out = {};
@@ -606,6 +606,78 @@ api.put('/settings', wrap((req, res) => {
   restartEmailPolling();
   audit('settings_update', { keys: Object.keys(req.body) });
   res.json({ ok: true });
+}));
+
+// ---------- Backup ----------
+// Folder choice uses the Mac's own folder picker, available in the desktop app.
+async function chooseFolder(title) {
+  if (!process.versions.electron) throw Object.assign(new Error('Choosing a folder works in the desktop app.'), { status: 400 });
+  const { dialog, BrowserWindow } = await import('electron');
+  const r = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? undefined, { title, properties: ['openDirectory', 'createDirectory'] });
+  return r.canceled ? null : r.filePaths[0];
+}
+// A picked folder may be the backup folder itself, its Backups folder, or a folder holding "HSA Tracker".
+function backupRootIn(picked) {
+  for (const p of [picked, path.dirname(picked), path.join(picked, 'HSA Tracker')]) {
+    if (existsSync(path.join(p, 'Backups'))) return p;
+  }
+  return null;
+}
+
+api.get('/backup/status', wrap((req, res) => res.json(backupStatus())));
+
+api.post('/backup/now', wrap(async (req, res) => {
+  await runBackup();
+  res.json(backupStatus());
+}));
+
+api.put('/backup/settings', wrap((req, res) => {
+  if ('auto' in req.body) setSetting('backup_auto', !!req.body.auto);
+  if ('plain' in req.body) setSetting('backup_plain', !!req.body.plain);
+  res.json(backupStatus());
+}));
+
+api.post('/backup/folder', wrap(async (req, res) => {
+  if (req.body?.use === 'icloud') setSetting('backup_dir', '');
+  else {
+    const picked = await chooseFolder('Choose where HSA Tracker keeps its backups');
+    if (!picked) return res.json(backupStatus());
+    // Backups go in their own "HSA Tracker" folder inside whatever was picked (say, Dropbox).
+    setSetting('backup_dir', path.basename(picked) === 'HSA Tracker' ? picked : path.join(picked, 'HSA Tracker'));
+  }
+  audit('backup_folder', { folder: backupFolder() });
+  res.json(backupStatus());
+}));
+
+api.post('/backup/reveal', wrap(async (req, res) => {
+  const folder = backupFolder();
+  if (!folder || !existsSync(folder)) return res.status(400).json({ error: 'No backup has been made yet.' });
+  if (!process.versions.electron) return res.status(400).json({ error: `Backups are in ${folder}` });
+  const { shell } = await import('electron');
+  await shell.openPath(folder);
+  res.json({ ok: true });
+}));
+
+api.get('/backup/list', wrap((req, res) => res.json(listBackups(req.query.folder || backupFolder()))));
+
+api.post('/backup/choose-restore-folder', wrap(async (req, res) => {
+  const picked = await chooseFolder('Choose the folder that holds your HSA Tracker backups');
+  if (!picked) return res.json({ cancelled: true });
+  const root = backupRootIn(picked);
+  if (!root) return res.status(400).json({ error: "No HSA Tracker backups were found in that folder." });
+  res.json({ folder: root, backups: listBackups(root) });
+}));
+
+api.post('/backup/restore', wrap(async (req, res) => {
+  const folder = req.body?.folder || backupFolder();
+  res.json(await restoreBackup(folder, req.body?.file));
+}));
+
+// On a Mac with no records yet: is there a backup waiting in iCloud Drive?
+api.get('/backup/found', wrap((req, res) => {
+  const empty = !db.prepare('SELECT 1 FROM receipts LIMIT 1').get() && !db.prepare('SELECT 1 FROM expenses LIMIT 1').get();
+  const latest = empty ? listBackups(backupFolder() || icloudFolder()).find(b => !b.beforeRestore && (b.expenses || b.receipts)) : null;
+  res.json({ backup: latest ? { ...latest, inICloud: latest.folder === icloudFolder() } : null });
 }));
 
 api.post('/ai/test', wrap(async (req, res) => {

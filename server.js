@@ -7,6 +7,7 @@ import './src/db.js';
 import { api } from './src/routes/api.js';
 import { restartEmailPolling } from './src/lib/email.js';
 import { listJobs } from './src/lib/ingest.js';
+import { startBackupSchedule } from './src/lib/backup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8321;
@@ -63,6 +64,7 @@ app.use((err, req, res, next) => {
 });
 
 restartEmailPolling();
+startBackupSchedule();
 
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`\n  HSA Tracker running → http://localhost:${PORT}\n`);
