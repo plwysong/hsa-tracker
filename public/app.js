@@ -120,7 +120,7 @@ function askPreHsa(data) {
     openModal(`
       <h3>Dated before your HSA opened</h3>
       <p style="font-size:13.5px;line-height:1.5;margin:0 0 10px">${esc(data.error.replace(/ \(\d{4}-\d{2}-\d{2}\)\.$/, ` (${fmtDate(data.established)}).`))}</p>
-      <p style="font-size:13px;color:var(--ink-2);line-height:1.5;margin:0 0 4px">The IRS only allows tax-free reimbursement of expenses incurred <strong>after</strong> your HSA was established. You can still keep the receipt: <strong>Keep as record</strong> saves it in your ledger without counting it toward what you can withdraw. Choose <strong>It qualifies</strong> only if the date that applies is earlier — for example, the money came over from an earlier HSA. If the date itself is wrong, cancel and edit it.</p>
+      <p style="font-size:13px;color:var(--ink-2);line-height:1.5;margin:0 0 4px">The IRS only allows tax-free reimbursement of expenses incurred <strong>after</strong> your HSA was established. You can still keep the receipt: <strong>Keep as record</strong> saves it in your expenses without counting it toward what you can withdraw. Choose <strong>It qualifies</strong> only if the date that applies is earlier — for example, the money came over from an earlier HSA. If the date itself is wrong, cancel and edit it.</p>
       <div class="m-actions">
         <button class="btn" data-close>Cancel</button>
         <button class="btn" id="m-pre-count">It qualifies — count it</button>
@@ -476,7 +476,7 @@ views.dashboard = async function () {
 
     <div class="card">
       <div class="group-head"><span class="g-title">Recently approved</span><span class="g-meta">latest approvals first</span>
-        <span class="g-actions"><button class="btn small ghost" id="dash-ledger">Full ledger ${icon('arrowRight')}</button></span></div>
+        <span class="g-actions"><button class="btn small ghost" id="dash-ledger">All expenses ${icon('arrowRight')}</button></span></div>
       <div class="table-wrap"><table class="data" id="dash-table">
         <thead><tr><th data-sort="date">Date</th><th data-sort="provider">Provider</th><th data-sort="description">Description</th><th data-sort="category">Category</th><th class="num" data-sort="amount" data-type="num">Amount</th></tr></thead>
         <tbody>${s.recent.map(e => `
@@ -531,15 +531,15 @@ views.review = async function () {
   main.innerHTML = `
     <div class="page-head">
       <div>
-        <h1>Review Queue</h1>
-        <div class="sub">Nothing reaches the permanent ledger without your approval. <span id="rq-total">${items.length} item${items.length === 1 ? '' : 's'} · ${money(total)}</span></div>
+        <h1>Review</h1>
+        <div class="sub">Nothing is added to your expenses without your approval. <span id="rq-total">${items.length} item${items.length === 1 ? '' : 's'} · ${money(total)}</span></div>
       </div>
       <div class="actions"><button class="btn" id="rq-upload">${icon('upload')} Upload receipts</button></div>
     </div>
 
     ${items.length || Object.values(reviewFilters).some(Boolean) ? `
     <div class="filters">
-      <input type="search" id="rq-q" placeholder="Search…" aria-label="Search the review queue" value="${esc(reviewFilters.q)}">
+      <input type="search" id="rq-q" placeholder="Search…" aria-label="Search items to review" value="${esc(reviewFilters.q)}">
       <select id="rq-conf" aria-label="Confidence">
         <option value="">All confidence</option>
         ${['High', 'Medium', 'Low'].map(c => `<option ${reviewFilters.confidence === c ? 'selected' : ''}>${c}</option>`).join('')}
@@ -559,10 +559,10 @@ views.review = async function () {
     </div>` : ''}
 
     ${waitingPaymentsHtml(waiting, receipts)}
-    ${items.length === 0 && !waiting.length ? `<div class="card"><div class="empty"><div class="big">${icon('check', 34)}</div>Queue is clear.<br>${settings.email_enabled ? 'Upload a receipt or wait for the next email check.' : 'Upload a receipt to get started.'}</div></div>` : ''}
+    ${items.length === 0 && !waiting.length ? `<div class="card"><div class="empty"><div class="big">${icon('check', 34)}</div>All caught up — nothing to review.<br>${settings.email_enabled ? 'Upload a receipt or wait for the next email check.' : 'Upload a receipt to get started.'}</div></div>` : ''}
     ${[...groups.entries()].map(([key, list]) => renderGroup(key, list, settings, receiptById.get(list[0].receipt_id))).join('')}
 
-    ${discardedCount ? `<p class="inline-note section-gap">${discardedCount} item${discardedCount === 1 ? ' was' : 's were'} auto-discarded as clearly not eligible — <a href="#/discarded">view them</a>. Nothing is ever deleted.</p>` : ''}
+    ${discardedCount ? `<p class="inline-note section-gap">${discardedCount} item${discardedCount === 1 ? ' was' : 's were'} set aside as not eligible — <a href="#/discarded">view them</a>. Nothing is ever deleted.</p>` : ''}
 
     <div class="bulkbar" id="bulkbar" hidden>
       <span id="bulk-count"></span>
@@ -602,20 +602,22 @@ views.review = async function () {
     }
   };
 
-  // Clicking an item (or Enter on it) opens it beside the queue; clicking it again closes it.
+  // Clicking an item opens it beside the queue; clicking it again closes it. The description is
+  // a real button, so screen readers announce it and Tab / Enter reach it.
   const rowFor = id => main.querySelector(`.item[data-id="${id}"]`);
   reviewShow = id => {
     const e = order.find(x => x.id === id);
-    $$('.item.row-selected').forEach(r => r.classList.remove('row-selected'));
+    $$('.item.row-selected').forEach(r => { r.classList.remove('row-selected'); r.querySelector('.row-open')?.removeAttribute('aria-current'); });
     if (!e) { closePane(); return; }
     rowFor(id)?.classList.add('row-selected');
+    rowFor(id)?.querySelector('.row-open')?.setAttribute('aria-current', 'true');
     const list = groups.get([...groups.keys()].find(k => groups.get(k).includes(e)));
     openReviewPane(e, settings, { list, order, rowFor });
   };
 
   main.onclick = actionHandler(async e => {
     const row = e.target.closest('.item[data-id]');
-    if (row && !e.target.closest('input, button, a')) {
+    if (row && (e.target.closest('.row-open') || !e.target.closest('input, button, a'))) {
       const id = Number(row.dataset.id);
       if (paneKey === 'review:' + id) closePane(); else reviewShow(id);
       return;
@@ -688,7 +690,7 @@ function renderGroup(key, list, settings, rc) {
     <div class="group-head">
       <span class="g-title">${esc(title)}</span>
       <span class="g-meta">${list.length} item${list.length === 1 ? '' : 's'} · ${money(sum)}</span>
-      ${first.receipt_id ? `<button class="btn small ghost" data-act="view-receipt" data-rid="${first.receipt_id}" title="${esc(fileName)}">View receipt</button>` : ''}
+      ${first.receipt_id ? `<button class="btn small ghost" data-act="view-receipt" data-rid="${first.receipt_id}" aria-label="View receipt" title="${esc(fileName)}">View receipt</button>` : ''}
       <span class="g-actions">
         <button class="btn small ${cautious ? '' : 'good'}" data-group-act="approve" data-ids='${ids}'>${icon('check')} Approve all</button>
         <button class="btn small" data-group-act="reject" data-ids='${ids}'>${icon('x')} Reject all</button>
@@ -697,10 +699,10 @@ function renderGroup(key, list, settings, rc) {
     ${unchecked ? `<div class="g-fact warn">AI didn't check ${unchecked === list.length ? (list.length === 1 ? 'this item' : 'these items') : `${unchecked} of these items`} — only keyword matching did. Compare ${unchecked === 1 ? 'it' : 'them'} with the receipt before approving.</div>` : ''}
     ${receiptFactsHtml(rc)}
     ${list.map(e => `
-      <div class="item row-click" data-id="${e.id}" tabindex="0" aria-label="${esc(e.description)}, ${money(e.amount)}">
+      <div class="item row-click" data-id="${e.id}">
         <input type="checkbox" data-id="${e.id}" aria-label="Select ${esc(e.description)}">
         <div class="body">
-          <div class="desc">${esc(e.description)}</div>
+          <button class="desc row-open" aria-controls="detail-pane">${esc(e.description)}</button>
           <div class="meta">
             <span>${fmtDate(e.date)}</span>·
             <span class="chip cat">${esc(e.category)}</span>
@@ -811,7 +813,7 @@ function expensePaneHtml(e, settings) {
       ? `<button class="btn primary" data-pane-act="toggle-reimb">${e.reimbursed ? 'Mark not reimbursed' : 'Mark reimbursed'}</button>`
       : e.status === 'pending_review'
         ? `<button class="btn good" data-pane-act="approve">${icon('check')} Approve</button>`
-        : `<button class="btn primary" data-pane-act="reopen">${icon('undo')} Re-queue</button>`}
+        : `<button class="btn primary" data-pane-act="reopen">${icon('undo')} Send back to Review</button>`}
     <button class="btn" data-pane-act="edit">Edit</button>
     ${e.receipt_id ? `<button class="btn" data-pane-act="open-receipt">${icon('eye')} Open receipt</button>` : ''}
     <span style="flex:1"></span>
@@ -869,7 +871,7 @@ function openExpensePane(e, settings, refresh) {
         toast(e.pre_hsa_override ? 'Kept as a record — not counted' : 'Now counts toward withdrawals');
         refresh(e.id);
       }
-      if (act === 'reopen') { await api(`/expenses/${e.id}/reopen`, { method: 'POST' }); toast('Moved back to review queue'); refresh(e.id); }
+      if (act === 'reopen') { await api(`/expenses/${e.id}/reopen`, { method: 'POST' }); toast('Sent back to Review'); refresh(e.id); }
       if (act === 'toggle-reimb') {
         if (e.reimbursed) {
           await api(`/expenses/${e.id}/reimburse`, { method: 'POST', body: { reimbursed: false } });
@@ -1057,8 +1059,8 @@ views.ledger = async function () {
   main.innerHTML = `
     <div class="page-head">
       <div>
-        <h1>Ledger</h1>
-        <div class="sub">The permanent record. Click any row to inspect its evidence.</div>
+        <h1>Expenses</h1>
+        <div class="sub">Everything you've approved, kept with its receipt. Click a row to see the details.</div>
       </div>
       <div class="actions">
         ${ledgerSwitch('ledger')}
@@ -1332,7 +1334,7 @@ views.receipts = async function () {
   main.innerHTML = `
     <div class="page-head">
       <div>
-        <h1>Ledger</h1>
+        <h1>Expenses</h1>
         <div class="sub">Every source document, kept with the expenses it backs. Drop a file anywhere in the app to add one.</div>
       </div>
       <div class="actions">
@@ -1388,7 +1390,7 @@ function receiptPaneHtml(r, items) {
   const goes = [];
   if (r.approved_count) goes.push(`<strong>${n(r.approved_count, 'approved expense')}</strong>`);
   if (r.pending_count + r.rejected_count) goes.push(n(r.pending_count + r.rejected_count, 'item') + ' awaiting review or rejected');
-  if (r.discarded_count) goes.push(n(r.discarded_count, 'discarded item'));
+  if (r.discarded_count) goes.push(n(r.discarded_count, 'item') + ' set aside as not eligible');
   return `
   <div class="drawer-head">
     <div>
@@ -1410,7 +1412,7 @@ function receiptPaneHtml(r, items) {
       : `<p class="inline-note" style="margin:0">${r.has_text
           ? 'Nothing eligible was found on this receipt. If that is wrong, re-run triage from More, or add the expense by hand.'
           : 'This file could not be read. Try Re-triage from More, or add its line items by hand with Add expense.'}</p>`}
-    ${r.discarded_count ? `<p class="inline-note" style="margin:8px 0 0">${n(r.discarded_count, 'item')} auto-discarded as not eligible — <a href="#/discarded">view</a>.</p>` : ''}
+    ${r.discarded_count ? `<p class="inline-note" style="margin:8px 0 0">${n(r.discarded_count, 'item')} set aside as not eligible — <a href="#/discarded">view</a>.</p>` : ''}
     <div id="rc-text" hidden>
       <div class="drawer-section-title">Extracted text</div>
       <pre class="rawtext" id="rc-text-body"></pre>
@@ -1549,13 +1551,13 @@ views.discarded = async function () {
   main.innerHTML = `
     <div class="page-head">
       <div>
-        <h1>Discarded items</h1>
-        <div class="sub">Line items the triage judged clearly not HSA-eligible — kept for audit, never silently deleted. Re-queue anything you disagree with.</div>
+        <h1>Set aside as not eligible</h1>
+        <div class="sub">Lines from your receipts that were judged clearly not HSA-eligible (groceries, gifts and the like). They're kept, never deleted — send back to Review anything you disagree with.</div>
       </div>
       <div class="actions"><button class="btn" id="dc-back">${icon('arrowLeft')} Review</button></div>
     </div>
     <div class="card"><div class="table-wrap"><table class="data" id="dc-table">
-      <thead><tr><th data-sort="when">When</th><th data-sort="item">Item</th><th class="num" data-sort="amount" data-type="num">Amount</th><th data-sort="why">Why discarded</th><th>Receipt</th><th></th></tr></thead>
+      <thead><tr><th data-sort="when">When</th><th data-sort="item">Item</th><th class="num" data-sort="amount" data-type="num">Amount</th><th data-sort="why">Why</th><th>Receipt</th><th></th></tr></thead>
       <tbody>
         ${rows.map(d => `
         <tr>
@@ -1564,8 +1566,8 @@ views.discarded = async function () {
           <td class="num" data-v="${d.amount ?? ''}">${d.amount != null ? money(d.amount) : '—'}</td>
           <td class="muted">${esc(d.reason)}</td>
           <td>${d.receipt_id ? `<button class="btn small ghost" data-act="view-receipt" data-rid="${d.receipt_id}">${icon('eye')}</button>` : '—'}</td>
-          <td class="actions-cell">${d.amount != null ? `<button class="btn small ghost" data-act="requeue" data-id="${d.id}">${icon('undo')} Re-queue</button>` : ''}</td>
-        </tr>`).join('') || '<tr><td colspan="6" class="empty">Nothing discarded yet</td></tr>'}
+          <td class="actions-cell">${d.amount != null ? `<button class="btn small ghost" data-act="requeue" data-id="${d.id}">${icon('undo')} Send back to Review</button>` : ''}</td>
+        </tr>`).join('') || '<tr><td colspan="6" class="empty">Nothing set aside yet</td></tr>'}
       </tbody>
     </table></div></div>`;
 
@@ -1580,7 +1582,7 @@ views.discarded = async function () {
       await api(`/discarded/${btn.dataset.id}/requeue`, { method: 'POST' });
       await refreshBadge();
       const waiting = Number($('#review-badge').textContent) || 0;
-      toast(`Moved to Review — ${waiting} item${waiting === 1 ? '' : 's'} waiting`);
+      toast(`Sent back to Review — ${waiting} item${waiting === 1 ? '' : 's'} waiting`);
       views.discarded();
     }
   });
@@ -1658,9 +1660,9 @@ views.settings = async function () {
     <div class="settings-form">
       <div class="card settings-section" style="margin-top:16px">
         <h3>Backup</h3>
-        <div class="s-sub">One zip with everything: your ledger, a PDF summary, the full history, and every receipt file. Keep a copy somewhere safe. The tax summary and spreadsheets are under <strong>Export</strong> in the Ledger.</div>
+        <div class="s-sub">One zip with everything: your expenses, a PDF summary, the full history, and every receipt file. Keep a copy somewhere safe. The tax summary and spreadsheets are under <strong>Export</strong> in Expenses.</div>
         <a class="btn primary" href="/api/export/zip">${icon('zip')} Download full backup</a>
-        <button class="btn ghost" id="go-export">Go to Ledger exports ${icon('arrowRight')}</button>
+        <button class="btn ghost" id="go-export">Go to Expenses ${icon('arrowRight')}</button>
       </div>
     </div>
 
@@ -1682,10 +1684,10 @@ views.settings = async function () {
     const st = await api('/stats');
     el.innerHTML = st.record_only_count ? `<div class="pre-hsa-note info">
       <strong>${st.record_only_count} approved expense${st.record_only_count === 1 ? '' : 's'} (${money(st.record_only_total)})</strong> ${st.record_only_count === 1 ? 'is' : 'are'} dated before this.
-      ${st.record_only_count === 1 ? 'It stays' : 'They stay'} in your ledger as records but no longer count toward what you can withdraw.
+      ${st.record_only_count === 1 ? 'It stays' : 'They stay'} in your expenses as records but no longer count toward what you can withdraw.
       ${st.record_only_reimbursed_count ? `<strong>${st.record_only_reimbursed_count} ${st.record_only_reimbursed_count === 1 ? 'was' : 'were'} already reimbursed from your HSA</strong> — worth reviewing with a tax preparer.` : ''}
-      If one does qualify, open it in the Ledger and choose "It qualifies — count it".
-      <div style="margin-top:8px"><button class="btn small" id="pre-hsa-view">View them in the Ledger</button></div></div>` : '';
+      If one does qualify, open it in Expenses and choose "It qualifies — count it".
+      <div style="margin-top:8px"><button class="btn small" id="pre-hsa-view">View them in Expenses</button></div></div>` : '';
     $('#pre-hsa-view')?.addEventListener('click', () => {
       Object.assign(ledgerFilters, { status: 'approved', pre_hsa: '1' });
       navigate('ledger');
@@ -1958,7 +1960,7 @@ function renderJobs(jobs) {
       : j.status === 'done' ? `<span class="ok">${icon('check')}</span>`
       : j.status === 'duplicate' ? `<span class="muted">${icon('copy')}</span>`
       : `<span class="err">${icon('x')}</span>`;
-    const extra = j.status === 'done' ? `${j.queued} queued for review${j.discarded ? `, ${j.discarded} discarded` : ''}` : (j.detail || statusText[j.status]);
+    const extra = j.status === 'done' ? `${j.queued} to review${j.discarded ? `, ${j.discarded} set aside as not eligible` : ''}` : (j.detail || statusText[j.status]);
     const dismiss = j.status === 'error' ? `<button class="btn small ghost job-dismiss" data-job="${j.id}" title="Dismiss">${icon('x')}</button>` : '';
     return `<div class="card job">${mark}<div class="j-body"><div class="j-name">${esc(j.name)}</div><div class="j-detail">${esc(active ? statusText[j.status] : extra)}</div></div>${dismiss}</div>`;
   }).join('');

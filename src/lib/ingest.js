@@ -197,7 +197,7 @@ async function processJob(job, buffer, meta) {
       return;
     }
     job.status = 'duplicate';
-    job.detail = `Identical file already processed (receipt #${existing.id}) — skipped to avoid duplicate entries. Find it under Ledger → Receipts.`;
+    job.detail = `Identical file already processed (receipt #${existing.id}) — skipped to avoid duplicate entries. Find it under Expenses → Receipts.`;
     return;
   }
 
@@ -231,14 +231,14 @@ async function extractAndTriage(job, receiptId, buffer, mime, originalName, sour
     text = await extractInto(receiptId, buffer, mime, originalName, sourceDetail);
   } catch (err) {
     job.status = 'error';
-    job.detail = `The file was stored but could not be read (${err.message}) — drop it again to retry, or add its line items manually from Ledger → Receipts.`;
+    job.detail = `The file was stored but could not be read (${err.message}) — drop it again to retry, or add its line items manually from Expenses → Receipts.`;
     audit('ingest_extract_error', { file: originalName, receiptId, error: err.message });
     return;
   }
 
   if (!hasText(text)) {
     job.status = 'done';
-    job.detail = 'Stored, but no readable text could be extracted — add line items manually from Ledger → Receipts.';
+    job.detail = 'Stored, but no readable text could be extracted — add line items manually from Expenses → Receipts.';
     audit('ingest_no_text', { file: originalName, receiptId });
     return;
   }

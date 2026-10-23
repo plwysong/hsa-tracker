@@ -101,7 +101,7 @@ export function fullJson() {
 export async function fullZip(res) {
   const archive = archiver('zip', { zlib: { level: 9 } });
   archive.pipe(res);
-  archive.append(ledgerCsv({ approvedOnly: true }), { name: 'HSA-ledger-approved.csv' });
+  archive.append(ledgerCsv({ approvedOnly: true }), { name: 'HSA-expenses-approved.csv' });
   archive.append(ledgerCsv({ approvedOnly: false }), { name: 'HSA-all-records.csv' });
   archive.append(fullJson(), { name: 'HSA-full-backup.json' });
   archive.append(await summaryPdfBuffer(), { name: 'HSA-summary.pdf' });
@@ -173,7 +173,7 @@ export function summaryPdfBuffer() {
   doc.moveDown(1);
 
   // Ledger table
-  doc.fontSize(11).font('Helvetica-Bold').text('Itemized ledger');
+  doc.fontSize(11).font('Helvetica-Bold').text('Itemized expenses');
   doc.moveDown(0.3);
   const cols = [
     { key: 'date', label: 'Date', w: 62 },

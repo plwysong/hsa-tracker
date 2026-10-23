@@ -176,7 +176,7 @@ function dismissDuplicates(id, others) {
 }
 const possibleDuplicate = (res, matches) => res.status(409).json({
   code: 'possible_duplicate', matches,
-  error: 'This looks like an expense already in your ledger — same date, amount and provider.',
+  error: 'This looks like an expense already in your expenses — same date, amount and provider.',
 });
 
 // ---------- Expenses ----------
@@ -532,7 +532,7 @@ api.get('/discarded', wrap((req, res) => {
 api.post('/discarded/:id/requeue', wrap((req, res) => {
   const d = db.prepare('SELECT * FROM discarded WHERE id = ?').get(req.params.id);
   if (!d) return res.status(404).json({ error: 'Not found' });
-  if (!Number.isFinite(d.amount) || d.amount <= 0) return res.status(400).json({ error: 'This entry has no amount — add it manually from the Ledger instead.' });
+  if (!Number.isFinite(d.amount) || d.amount <= 0) return res.status(400).json({ error: 'This entry has no amount — add it by hand from Expenses instead.' });
   // Date and provider come from the receipt's other line items, else from the
   // receipt itself — not today and blank, which the user would have to fix by hand.
   const sibling = d.receipt_id
@@ -547,7 +547,7 @@ api.post('/discarded/:id/requeue', wrap((req, res) => {
       INSERT INTO expenses (date, provider, category, description, amount, status, confidence, rationale, source_type, receipt_id)
       VALUES (?, ?, 'Other', ?, ?, 'pending_review', 'Low', ?, 'manual', ?)
     `).run(sibling?.date || doc?.doc_date || localToday(), sibling?.provider || doc?.provider || '', d.description, cents(d.amount),
-      `Originally auto-discarded ("${d.reason}") — re-queued by user for reconsideration.`, d.receipt_id);
+      `Originally set aside as not eligible ("${d.reason}") — sent back to Review by the user.`, d.receipt_id);
     db.prepare('DELETE FROM discarded WHERE id = ?').run(d.id);
     audit('requeue_discarded', { discardedId: d.id, reason: d.reason, newExpenseId: Number(r.lastInsertRowid) });
     db.exec('COMMIT');
@@ -615,7 +615,7 @@ api.get('/export/csv', wrap((req, res) => {
     return res.status(400).json({ error: 'ids must be a comma-separated list of numbers' });
   }
   res.type('text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="HSA-ledger.csv"');
+  res.setHeader('Content-Disposition', 'attachment; filename="HSA-expenses.csv"');
   res.send(ledgerCsv({ approvedOnly: !ids && req.query.all !== '1', ids }));
 }));
 
